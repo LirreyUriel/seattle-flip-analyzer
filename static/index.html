@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Seattle Flip Analyzer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+
+<!-- ================================================================
+     Header
+     ================================================================ -->
+<header class="header">
+  <div class="header-logo">🏠 Seattle <span>Flip</span> Analyzer</div>
+  <div class="header-meta" id="meta-text">Loading…</div>
+  <div class="header-actions">
+    <div class="view-toggle" role="group" aria-label="View mode">
+      <button class="view-btn active" id="view-grid-btn" title="Card grid">⊞ Grid</button>
+      <button class="view-btn" id="view-dashboard-btn" title="Comparison dashboard">◈ Dashboard</button>
+    </div>
+    <button class="btn" id="map-toggle-btn" title="Toggle map">🗺 Map</button>
+    <button class="btn" id="settings-btn" title="Score Settings">⚙ Settings</button>
+    <button class="btn btn-primary" id="refresh-btn">↻ Refresh</button>
+  </div>
+</header>
+
+<!-- Demo mode banner (injected by JS when demo_mode=true) -->
+<div id="demo-banner"></div>
+
+<!-- ================================================================
+     Filter Bar
+     ================================================================ -->
+<div class="filter-bar">
+
+  <div class="filter-group">
+    <label>Min Flip Score</label>
+    <div class="filter-score-row">
+      <input type="range" id="filter-score" min="0" max="100" value="0" step="5" style="width:110px" />
+      <span class="filter-score-val" id="score-val">0</span>
+    </div>
+  </div>
+
+  <div class="filter-group">
+    <label>Neighborhood</label>
+    <select id="filter-nbhd">
+      <option value="">All Neighborhoods</option>
+      <option value="Rainier Valley">Rainier Valley</option>
+      <option value="Beacon Hill">Beacon Hill</option>
+      <option value="White Center">White Center</option>
+      <option value="Delridge">Delridge</option>
+      <option value="Georgetown">Georgetown</option>
+      <option value="Columbia City">Columbia City</option>
+      <option value="Lake City">Lake City</option>
+      <option value="Northgate">Northgate</option>
+      <option value="Bitter Lake">Bitter Lake</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <label>Distress Type</label>
+    <select id="filter-distress">
+      <option value="">All Types</option>
+      <option value="REO">REO</option>
+      <option value="Short Sale">Short Sale</option>
+      <option value="Pre-Foreclosure">Pre-Foreclosure</option>
+      <option value="Estate Sale">Estate Sale</option>
+      <option value="Back on Market">Back on Market</option>
+      <option value="Standard">Standard</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <label>Property Type</label>
+    <select id="filter-type">
+      <option value="">All Types</option>
+      <option value="SFH">SFH</option>
+      <option value="Townhouse">Townhouse</option>
+      <option value="Condo">Condo</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <label>Price Range</label>
+    <div class="filter-price-row">
+      <input type="number" id="price-min" value="0" min="0" max="500000" step="10000" placeholder="Min" />
+      <span>–</span>
+      <input type="number" id="price-max" value="500000" min="0" max="500000" step="10000" placeholder="Max" />
+    </div>
+  </div>
+
+  <div class="filter-group">
+    <label>Sort By</label>
+    <select id="sort-by">
+      <option value="score">Flip Score</option>
+      <option value="price">Price</option>
+      <option value="dom">Days on Market</option>
+      <option value="roi">ROI %</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <label>Direction</label>
+    <select id="sort-dir">
+      <option value="desc">High → Low</option>
+      <option value="asc">Low → High</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <label>⭐ Favorites</label>
+    <label style="display:flex;align-items:center;gap:.4rem;cursor:pointer;padding:.4rem 0">
+      <input type="checkbox" id="filter-favs" style="accent-color:var(--accent);width:16px;height:16px" />
+      <span style="font-size:.82rem">Only favorites</span>
+    </label>
+  </div>
+
+  <div class="filter-actions">
+    <button class="btn" id="reset-filters">Reset</button>
+  </div>
+
+</div>
+
+<!-- ================================================================
+     Stats Bar
+     ================================================================ -->
+<div class="stats-bar" id="stats-bar">
+  &nbsp;
+</div>
+
+<!-- ================================================================
+     Content Layout (grid + map side by side)
+     ================================================================ -->
+<div class="content-layout" id="grid-view">
+
+  <main class="main-content">
+    <div class="property-grid" id="property-grid">
+      <!-- Cards injected by JS -->
+    </div>
+  </main>
+
+  <!-- Map Panel (right sidebar) -->
+  <div class="map-panel" id="map-panel">
+    <div id="property-map"></div>
+  </div>
+
+</div>
+
+<!-- ================================================================
+     Dashboard View
+     ================================================================ -->
+<div class="dashboard-view hidden" id="dashboard-view">
+
+  <!-- Scatter plot panel -->
+  <div class="dash-top">
+    <div class="dash-panel-header">
+      <div>
+        <div class="dash-panel-title">Strategic Scatter Plot</div>
+        <div class="dash-panel-sub">X = Renovation Cost &nbsp;·&nbsp; Y = Estimated Profit &nbsp;·&nbsp; Bubble size = ROI% &nbsp;·&nbsp; Color = Flip Score</div>
+      </div>
+      <div class="scatter-legend">
+        <span class="legend-dot" style="background:var(--green)"></span><span>High ≥70</span>
+        <span class="legend-dot" style="background:var(--yellow)"></span><span>Mid 40–69</span>
+        <span class="legend-dot" style="background:var(--red)"></span><span>Low &lt;40</span>
+      </div>
+    </div>
+    <div class="scatter-wrap">
+      <canvas id="scatter-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Comparison table panel -->
+  <div class="dash-bottom">
+    <div class="comp-header">
+      <div class="dash-panel-title">Property Comparison</div>
+      <input type="search" id="comp-search" class="comp-search" placeholder="Search address or neighborhood…" />
+    </div>
+    <div class="comp-table-scroll">
+      <table class="comp-table" id="comp-table">
+        <thead>
+          <tr>
+            <th data-col="flip_score" class="tc sort-desc">Score</th>
+            <th data-col="address">Address</th>
+            <th data-col="neighborhood">Neighborhood</th>
+            <th data-col="price" class="tr">Price</th>
+            <th data-col="arv" class="tr">ARV <span class="col-est">(est.)</span></th>
+            <th data-col="renovation_cost" class="tr">Reno Cost <span class="col-est">(est.)</span></th>
+            <th data-col="profit" class="tr">Est. Profit <span class="col-est">(est.)</span></th>
+            <th data-col="roi_pct" class="tr">ROI % <span class="col-est">(est.)</span></th>
+            <th data-col="dom" class="tr">DOM</th>
+            <th data-col="price_psf" class="tr">$/sqft</th>
+          </tr>
+        </thead>
+        <tbody id="comp-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<!-- Quick View Sidebar (shared between grid + dashboard) -->
+<div class="quick-view" id="quick-view" role="complementary" aria-label="Property quick view">
+  <div class="qv-topbar">
+    <span class="qv-label">Quick View</span>
+    <button class="modal-close" id="qv-close" aria-label="Close">✕</button>
+  </div>
+  <div class="qv-body" id="qv-body"></div>
+</div>
+
+<!-- ================================================================
+     Detail Modal
+     ================================================================ -->
+<div class="modal-backdrop hidden" id="modal-backdrop" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="modal-header" id="modal-header">
+      <!-- Header injected by JS -->
+    </div>
+    <div class="modal-body" id="modal-body">
+      <!-- Body injected by JS -->
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     Settings Modal
+     ================================================================ -->
+<div class="modal-backdrop hidden" id="settings-backdrop" role="dialog" aria-modal="true" aria-label="Score Settings">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-header" style="padding:1.25rem 1.5rem 1rem">
+      <div>
+        <div style="font-size:1.1rem;font-weight:700">⚙ Score Weight Settings</div>
+        <div style="font-size:.8rem;color:var(--text-muted);margin-top:.2rem">
+          Adjust how much each factor contributes to the Flip Score (0–100).
+          Weights are automatically normalized to sum to 100.
+        </div>
+      </div>
+      <button class="modal-close" id="settings-close-btn">✕</button>
+    </div>
+    <div style="padding:1.25rem 1.5rem;display:flex;flex-direction:column;gap:1rem">
+
+      <!-- Max price -->
+      <div class="weight-row">
+        <div class="weight-label">
+          <strong>Max Property Price</strong>
+          <span>Re-fetches listings from Redfin when changed</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:.4rem;margin-left:auto">
+          <span style="color:var(--text-muted);font-size:.85rem">$</span>
+          <input type="number" id="settings-max-price" min="100000" max="2000000" step="25000"
+            style="width:110px;background:var(--surface);border:1px solid var(--border);border-radius:6px;
+                   color:var(--text);font-size:.9rem;font-weight:700;padding:.3rem .5rem;text-align:right" />
+          <span style="color:var(--text-muted);font-size:.75rem;white-space:nowrap">triggers re-fetch</span>
+        </div>
+      </div>
+
+      <div style="border-top:1px solid var(--border);margin:.25rem 0;padding-top:.75rem;
+                  font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+                  color:var(--text-muted)">Score Weights</div>
+
+      <!-- Weight rows injected here by JS -->
+      <div id="settings-rows"></div>
+
+      <!-- Total indicator -->
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:.6rem .9rem;background:var(--surface2);border-radius:8px;font-size:.85rem">
+        <span style="color:var(--text-muted)">Total</span>
+        <span id="settings-total" style="font-weight:800;font-size:1rem">100</span>
+      </div>
+
+      <!-- Actions -->
+      <div style="display:flex;gap:.75rem;justify-content:flex-end;padding-top:.25rem">
+        <button class="btn" id="settings-reset-btn">Reset to Defaults</button>
+        <button class="btn btn-primary" id="settings-save-btn">Save &amp; Re-score</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     Toast
+     ================================================================ -->
+<div class="toast" id="toast"></div>
+
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<!-- Leaflet -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- App -->
+<script src="/static/app.js"></script>
+
+</body>
+</html>
