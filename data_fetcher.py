@@ -7,6 +7,7 @@ import json
 import uuid
 import random
 import hashlib
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -654,6 +655,51 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     return prop
 
 
+# ---------------------------------------------------------------------------
+# Redfin region IDs — King, Pierce, Snohomish counties
+# ---------------------------------------------------------------------------
+REGIONS = [
+    # King County
+    {"name": "Seattle",          "region_id": "16163"},
+    {"name": "Renton",           "region_id": "16057"},
+    {"name": "Burien",           "region_id": "16742"},
+    {"name": "Kent",             "region_id": "16748"},
+    {"name": "Auburn",           "region_id": "16702"},
+    {"name": "Tukwila",          "region_id": "16170"},
+    {"name": "SeaTac",           "region_id": "16793"},
+    {"name": "Federal Way",      "region_id": "16732"},
+    {"name": "Shoreline",        "region_id": "16165"},
+    {"name": "Kenmore",          "region_id": "16747"},
+    {"name": "Bellevue",         "region_id": "16706"},
+    {"name": "Kirkland",         "region_id": "16749"},
+    {"name": "Redmond",          "region_id": "16786"},
+    {"name": "Bothell",          "region_id": "16712"},
+    {"name": "Des Moines",       "region_id": "16727"},
+    {"name": "Normandy Park",    "region_id": "16773"},
+    {"name": "Covington",        "region_id": "16724"},
+    {"name": "Maple Valley",     "region_id": "16758"},
+    {"name": "Black Diamond",    "region_id": "16709"},
+    {"name": "Enumclaw",         "region_id": "16730"},
+    # Pierce County
+    {"name": "Tacoma",           "region_id": "16817"},
+    {"name": "Lakewood",         "region_id": "16823"},
+    {"name": "Puyallup",         "region_id": "16834"},
+    {"name": "Bonney Lake",      "region_id": "16819"},
+    {"name": "Sumner",           "region_id": "16840"},
+    {"name": "Edgewood",         "region_id": "16821"},
+    {"name": "Milton",           "region_id": "16829"},
+    # Snohomish County
+    {"name": "Everett",          "region_id": "17026"},
+    {"name": "Marysville",       "region_id": "17036"},
+    {"name": "Mukilteo",         "region_id": "17039"},
+    {"name": "Edmonds",          "region_id": "17023"},
+    {"name": "Lynnwood",         "region_id": "17034"},
+    {"name": "Mountlake Terrace","region_id": "17038"},
+    {"name": "Mill Creek",       "region_id": "17037"},
+    {"name": "Snohomish",        "region_id": "17045"},
+]
+
+
 async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int) -> list[dict]:
     """Fetch SFH listings for a single Redfin region."""
     region_results = []
@@ -696,54 +742,7 @@ async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int)
 async def fetch_redfin_listings(max_price: int = 1500000) -> list[dict]:
     """Fetch SFH listings from Redfin across King, Pierce, and Snohomish counties.
     Each region is fetched concurrently. Results are deduplicated and sorted by flip score.
-
-    region_type=6 = city, region_type=5 = county, region_type=2 = zip
     """
-
-    # Verified Redfin region_ids (city, region_type=6) for WA cities
-    REGIONS = [
-        # King County
-        {"name": "Seattle",         "region_id": "16163"},
-        {"name": "Renton",          "region_id": "16057"},
-        {"name": "Burien",          "region_id": "16742"},
-        {"name": "Kent",            "region_id": "16748"},
-        {"name": "Auburn",          "region_id": "16702"},
-        {"name": "Tukwila",         "region_id": "16170"},
-        {"name": "SeaTac",          "region_id": "16793"},
-        {"name": "Federal Way",     "region_id": "16732"},
-        {"name": "Shoreline",       "region_id": "16165"},
-        {"name": "Kenmore",         "region_id": "16747"},
-        {"name": "Bellevue",        "region_id": "16706"},
-        {"name": "Kirkland",        "region_id": "16749"},
-        {"name": "Redmond",         "region_id": "16786"},
-        {"name": "Bothell",         "region_id": "16712"},
-        {"name": "Des Moines",      "region_id": "16727"},
-        {"name": "Normandy Park",   "region_id": "16773"},
-        {"name": "Covington",       "region_id": "16724"},
-        {"name": "Maple Valley",    "region_id": "16758"},
-        {"name": "Black Diamond",   "region_id": "16709"},
-        {"name": "Enumclaw",        "region_id": "16730"},
-        # Pierce County
-        {"name": "Tacoma",          "region_id": "16817"},
-        {"name": "Lakewood",        "region_id": "16823"},
-        {"name": "Puyallup",        "region_id": "16834"},
-        {"name": "Bonney Lake",     "region_id": "16819"},
-        {"name": "Sumner",          "region_id": "16840"},
-        {"name": "Edgewood",        "region_id": "16821"},
-        {"name": "Milton",          "region_id": "16829"},
-        # Snohomish County
-        {"name": "Everett",         "region_id": "17026"},
-        {"name": "Marysville",      "region_id": "17036"},
-        {"name": "Mukilteo",        "region_id": "17039"},
-        {"name": "Edmonds",         "region_id": "17023"},
-        {"name": "Lynnwood",        "region_id": "17034"},
-        {"name": "Mountlake Terrace","region_id": "17038"},
-        {"name": "Mill Creek",      "region_id": "17037"},
-        {"name": "Snohomish",       "region_id": "17045"},
-        {"name": "Bothell",         "region_id": "17019"},  # Snohomish portion
-        {"name": "Kenmore",         "region_id": "17031"},  # Snohomish portion
-    ]
-
     all_results = []
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         tasks = [_fetch_region(client, r, max_price) for r in REGIONS]
