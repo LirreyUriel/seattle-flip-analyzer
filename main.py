@@ -137,6 +137,7 @@ async def list_properties(
     sort_by: str = Query("score"),            # score | price | dom | roi
     sort_dir: str = Query("desc"),
     favorites_only: bool = Query(False),
+    comps_only: bool = Query(False),
 ):
     props = database.get_all_properties()
     favs = database.get_favorites()
@@ -162,6 +163,11 @@ async def list_properties(
         if favorites_only and not p.get("is_favorite"):
             continue
         if status_filter and p.get("status") != status_filter:
+            continue
+        if comps_only:
+            arv_bd = p.get("arv_breakdown", {})
+            # אם אין מחיר למטר רבוע מבוסס קומפס, או שהנכס לא סומן כחישוב מקומפס, נדלג עליו
+            if not arv_bd or not arv_bd.get("price_per_sqft"):
             continue
         filtered.append(p)
 
