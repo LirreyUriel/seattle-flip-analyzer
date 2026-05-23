@@ -18,6 +18,7 @@ let activeFilters = {
   sort_by: 'score',
   sort_dir: 'desc',
   favorites_only: false,
+   comps_only: false,
 };
 let currentPropertyId = null;
 let priceChart = null;
@@ -179,6 +180,7 @@ async function loadProperties() {
     sort_by: activeFilters.sort_by,
     sort_dir: activeFilters.sort_dir,
     favorites_only: activeFilters.favorites_only,
+    comps_only: activeFilters.comps_only,
   });
 
   try {
@@ -866,13 +868,22 @@ function bindFilters() {
     loadProperties();
   });
 
+  // 👇 הנה החלק החדש של סעיף ג' (נכנס כאן) 👇
+  // Comps only toggle
+  get('filter-comps-only').addEventListener('change', e => {
+    activeFilters.comps_only = e.target.checked;
+    loadProperties();
+  });
+
   // Reset
   get('reset-filters').addEventListener('click', () => {
     activeFilters = {
       min_score: 0, max_score: 100,
       neighborhood: '', distress_type: '', property_type: '',
       min_price: 0, max_price: 1500000,
-      sort_by: 'score', sort_dir: 'desc', favorites_only: false,
+      sort_by: 'score', sort_dir: 'desc', 
+      favorites_only: false,
+      comps_only: false, // ✓ קיים אצלך
     };
     get('filter-score').value = 0;
     get('score-val').textContent = 0;
@@ -882,8 +893,13 @@ function bindFilters() {
     get('price-min').value = 0;
     get('price-max').value = 1500000;
     get('sort-by').value = 'score';
+    get('sort-by').value = 'score';
     get('sort-dir').value = 'desc';
     get('filter-favs').checked = false;
+    
+    // 👇 השורה שחסרה לך כדי להשלים את סעיף ד' ויזואלית 👇
+    get('filter-comps-only').checked = false; 
+    
     loadProperties();
   });
 }
