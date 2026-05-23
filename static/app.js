@@ -328,6 +328,20 @@ function renderModal(p) {
     <div class="modal-title">${esc(p.address)}</div>
     <div class="modal-subtitle">${esc(p.neighborhood)} · ${esc(p.property_type)} · Built ${p.year_built}</div>
     <div class="modal-price">${fmt$(p.price)}</div>
+    <div class="modal-ext-links">
+      <a href="${esc(p.zillow_url)}" target="_blank" rel="noopener" class="ext-link-pill">
+        <svg viewBox="0 0 24 24" width="13" height="13"><path d="M12 2L2 9h3v13h14V9h3L12 2z"/></svg>
+        Zillow
+      </a>
+      <a href="${esc(p.redfin_url)}" target="_blank" rel="noopener" class="ext-link-pill">
+        <svg viewBox="0 0 24 24" width="13" height="13"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15v-4H7l5-8v4h4l-5 8z"/></svg>
+        Redfin
+      </a>
+      <a href="${esc(p.propwire_url || '#')}" target="_blank" rel="noopener" class="ext-link-pill ext-link-propwire">
+        <svg viewBox="0 0 24 24" width="13" height="13"><path d="M12 3C7 3 3 7 3 12s4 9 9 9 9-4 9-9-4-9-9-9zm1 14h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+        Propwire
+      </a>
+    </div>
   </div>
   <div class="modal-score-block">
     <div class="flip-score-badge ${scoreClass(p.flip_score)}">${p.flip_score}</div>
@@ -536,6 +550,9 @@ function renderModal(p) {
 <!-- ARV Estimate -->
 <div class="modal-section">
   <h3>ARV Estimate
+    <span class="arv-confidence arv-conf-${esc(arv_bd.arv_confidence || 'static')}">
+      ${esc(arv_bd.arv_confidence || 'static')} · ${arv_bd.n_comps || 0} comps
+    </span>
     <span class="info-wrap">
       <span class="info-icon">i</span>
       <div class="info-tooltip">
@@ -547,15 +564,16 @@ function renderModal(p) {
         <div class="tip-row"><span>Condo</span><span>−15%</span></div>
         <span class="tip-head">$/sqft used for ${esc(p.neighborhood)}</span>
         <div class="tip-row"><span>Base $/sqft</span><span>${fmt$(arv_bd.price_per_sqft || 0)}</span></div>
-        <div class="tip-source">Source: Internal table calibrated to King County market research. Not sourced from live MLS, Zillow, or Redfin valuations. Treat as a rough estimate — verify with a local agent.</div>
+        <div class="tip-source">Method: ${esc(arv_bd.arv_method || 'static table')}.</div>
       </div>
     </span>
   </h3>
-  <p class="source-note"><strong>Source:</strong> Internal CMA model — neighborhood median $/sqft manually calibrated to Seattle/King County market data. This is an estimate, not an appraisal or live MLS valuation.</p>
+  <p class="source-note"><strong>Method:</strong> ${esc(arv_bd.arv_method || 'static table')}. ${arv_bd.n_comps > 0 ? `Based on ${arv_bd.n_comps} recent sold comps filtered for similar SFH within ±20% sqft.` : 'No recent comps available — using static neighborhood table.'}</p>
   <table class="data-table">
     <thead><tr><th>ARV Factor</th><th class="td-right">Value</th></tr></thead>
     <tbody>
-      <tr><td>Neighborhood median $/sqft (${esc(p.neighborhood)})</td><td class="td-right">${fmt$(arv_bd.price_per_sqft || 0)}/sqft</td></tr>
+      <tr><td>$/sqft used (${esc(p.neighborhood)})</td><td class="td-right">${fmt$(arv_bd.price_per_sqft || 0)}/sqft</td></tr>
+      <tr><td>Static table $/sqft</td><td class="td-right" style="color:var(--text-muted)">${fmt$(arv_bd.static_psf || arv_bd.price_per_sqft || 0)}/sqft</td></tr>
       <tr><td>Property sqft</td><td class="td-right">${Number(arv_bd.sqft || p.sqft).toLocaleString()} sqft</td></tr>
       <tr><td>Property type adjustment</td><td class="td-right" style="font-size:.78rem">${esc(arv_bd.property_type_adjustment || 'No adjustment')}</td></tr>
       <tr><td class="td-total">Estimated ARV</td><td class="td-right td-total">${fmt$(p.arv)}</td></tr>
@@ -1345,6 +1363,25 @@ function bindConfig() {
 }
 
 // ---------------------------------------------------------------------------
+// Light / Dark mode
+// ---------------------------------------------------------------------------
+function initTheme() {
+  const saved = localStorage.getItem('theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', saved);
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) btn.textContent = saved === 'dark' ? '☀ Light' : '🌙 Dark';
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  const next = current === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) btn.textContent = next === 'dark' ? '☀ Light' : '🌙 Dark';
+}
+
+// ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
 
@@ -1699,6 +1736,7 @@ function bindDashboard() {
 // Init
 // ---------------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', async () => {
+  initTheme();
   initMap();
   bindFilters();
   bindRefresh();
@@ -1707,6 +1745,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindConfig();
   bindDashboard();
   document.getElementById('map-toggle-btn').addEventListener('click', toggleMap);
+  document.getElementById('theme-toggle-btn').addEventListener('click', toggleTheme);
   await loadStatus();
   await loadProperties();
   // Auto-refresh status every 60s
