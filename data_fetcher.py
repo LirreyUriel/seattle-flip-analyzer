@@ -370,7 +370,7 @@ async def fetch_zillow_listings(api_key: str) -> list[dict]:
         "location": "Seattle, WA",
         "status_type": "ForSale",
         "home_type": "Houses,Townhomes,Condos",
-        "maxPrice": "500000",
+        "maxPrice": "1500000",
         "isForSaleForeclosure": "true",
     }
 
@@ -552,7 +552,7 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     # Skip parking spaces / storage units
     if unit and re.match(r'^[A-Z]-?\d+$', unit.lstrip("#").strip()):
         return None  # e.g. "P-160", "S-22"
-    if unit and unit.lstrip("#").strip().startswith("P-"):
+    if unit and unit.lstrip("#").strip().startswith(("P-", "S-", "Storage", "Parking")):
         return None
     if unit:
         address = f"{address} {unit}"
@@ -603,16 +603,27 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     listing_type = int(h.get("listingType", 0) or 0)
 
     # listingType 6 = foreclosure/bank-owned on Redfin
-    if listing_type == 6 or "reo" in r or "bank owned" in r or "bank-owned" in r or "foreclosure" in tags:
+    # 1. עיקולים וכינוס (הכי קריטי)
+    if listing_type == 6 or any(x in r for x in ["reo", "bank owned", "bank-owned", "foreclosure"]):
         distress_type = "REO"
+    
     elif "short sale" in r or "short sale" in tags:
         distress_type = "Short Sale"
+    
     elif "pre-foreclosure" in r:
         distress_type = "Pre-Foreclosure"
+    
     elif "estate sale" in r or "probate" in r:
         distress_type = "Estate Sale"
+    
     elif back_on_market:
         distress_type = "Back on Market"
+    
+    # 2. הזדמנויות Flip כלליות (אם אף אחד מהנ"ל לא קרה, אבל הבית צריך עבודה)
+    elif any(x in r for x in ["fixer", "tlc", "needs work", "as-is", "as is", "handyman"]):
+        distress_type = "Fixer-Upper"
+    
+    # 3. נכס רגיל
     else:
         distress_type = "Standard"
 
