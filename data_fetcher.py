@@ -654,6 +654,45 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     return prop
 
 
+async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int) -> list[dict]:
+    """Fetch SFH listings for a single Redfin region."""
+    region_results = []
+    base = {
+        "al": 1, "num_homes": 150, "page_number": 1,
+        "status": 1, "uipt": "1",
+        "v": 8,
+        "region_id": region["region_id"], "region_type": "6",
+        "max_price": max_price,
+    }
+    queries = [
+        {**base, "ord": "price-asc"},
+        {**base, "ord": "price-asc", "page_number": 2},
+    ]
+    for params in queries:
+        try:
+            resp = await client.get(REDFIN_GIS_URL, params=params, headers=REDFIN_HEADERS)
+            resp.raise_for_status()
+            text = resp.text
+            if text.startswith("{}&&"):
+                text = text[4:]
+            data = json.loads(text)
+            if data.get("errorMessage") != "Success":
+                break
+            homes = data.get("payload", {}).get("homes", [])
+            for h in homes:
+                try:
+                    prop = _normalize_redfin(h, max_price=max_price)
+                    if prop:
+                        region_results.append(prop)
+                except Exception as e:
+                    log.debug(f"Skipped home in {region['name']}: {e}")
+        except Exception as e:
+            log.warning(f"Redfin query failed for {region['name']}: {e}")
+            break
+    log.info(f"Redfin [{region['name']}]: {len(region_results)} SFH fetched")
+    return region_results
+
+
 async def fetch_redfin_listings(max_price: int = 1500000) -> list[dict]:
     """Fetch SFH listings from Redfin across King, Pierce, and Snohomish counties.
     Each region is fetched concurrently. Results are deduplicated and sorted by flip score.
@@ -705,46 +744,9 @@ async def fetch_redfin_listings(max_price: int = 1500000) -> list[dict]:
         {"name": "Kenmore",         "region_id": "17031"},  # Snohomish portion
     ]
 
-    async def _fetch_region(client: httpx.AsyncClient, region: dict) -> list[dict]:
-        region_results = []
-        base = {
-            "al": 1, "num_homes": 150, "page_number": 1,
-            "status": 1, "uipt": "1",   # SFH only
-            "v": 8,
-            "region_id": region["region_id"], "region_type": "6",
-            "max_price": max_price,
-        }
-        queries = [
-            {**base, "ord": "price-asc"},
-            {**base, "ord": "price-asc", "page_number": 2},
-        ]
-        for params in queries:
-            try:
-                resp = await client.get(REDFIN_GIS_URL, params=params, headers=REDFIN_HEADERS)
-                resp.raise_for_status()
-                text = resp.text
-                if text.startswith("{}&&"):
-                    text = text[4:]
-                data = json.loads(text)
-                if data.get("errorMessage") != "Success":
-                    break
-                homes = data.get("payload", {}).get("homes", [])
-                for h in homes:
-                    try:
-                        prop = _normalize_redfin(h, max_price=max_price)
-                        if prop:
-                            region_results.append(prop)
-                    except Exception as e:
-                        log.debug(f"Skipped home in {region['name']}: {e}")
-            except Exception as e:
-                log.warning(f"Redfin query failed for {region['name']}: {e}")
-                break
-        log.info(f"Redfin [{region['name']}]: {len(region_results)} SFH fetched")
-        return region_results
-
     all_results = []
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        tasks = [_fetch_region(client, r) for r in REGIONS]
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        tasks = [_fetch_region(client, r, max_price) for r in REGIONS]
         region_batches = await asyncio.gather(*tasks, return_exceptions=True)
         for batch in region_batches:
             if isinstance(batch, list):
@@ -768,25 +770,28 @@ async def fetch_redfin_listings(max_price: int = 1500000) -> list[dict]:
 
 
 async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
-    """Fetch recently sold SFH comps from Redfin for each neighborhood.
-    Uses status=3 (sold), uipt=1 (houses only), sold_within_days=180.
-    Returns list of comp dicts ready for database.upsert_comps().
+    """Fetch recently sold SFH comps from Redfin.
+    Uses REGIONS map for correct region_ids — no post-hoc name filtering.
     """
     import hashlib as _hashlib
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
 
+    # Build name→region_id lookup from REGIONS list
+    region_lookup = {r["name"].lower(): r["region_id"] for r in REGIONS}
+
     all_comps = []
 
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         for nbhd in neighborhoods:
+            region_id = region_lookup.get(nbhd.lower(), "16163")  # fallback Seattle
             params = {
                 "al": 1,
                 "num_homes": 100,
                 "page_number": 1,
-                "status": 3,           # sold
-                "uipt": "1",           # houses only
+                "status": 3,
+                "uipt": "1",
                 "v": 8,
-                "region_id": "16163",
+                "region_id": region_id,
                 "region_type": "6",
                 "sold_within_days": 180,
             }
@@ -803,7 +808,7 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
                     continue
 
                 homes = data.get("payload", {}).get("homes", [])
-                log.info(f"Redfin comps: {len(homes)} sold homes fetched (filtering for {nbhd})")
+                log.info(f"Redfin comps [{nbhd}]: {len(homes)} sold homes")
 
                 for h in homes:
                     try:
@@ -812,35 +817,24 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
                         if price < 100000 or sqft < 400:
                             continue
 
-                        location = str(_rf(h.get("location"), "") or "").strip().lower()
-                        if nbhd.lower() not in location and location not in nbhd.lower():
-                            continue
-
-                        # Skip distressed sales (they'd pull ARV down)
+                        # Skip distressed sales
                         remarks = str(_rf(h.get("remarksAccessInfo"), "") or
                                       _rf(h.get("listingRemarks"), "") or "").lower()
-                        distress_signals = ["as-is", "as is", "reo", "bank owned",
-                                            "short sale", "estate sale", "foreclosure"]
-                        if any(s in remarks for s in distress_signals):
+                        if any(s in remarks for s in ["as-is", "as is", "reo", "bank owned",
+                                                       "short sale", "estate sale", "foreclosure"]):
                             continue
 
                         psf = round(price / sqft, 2)
                         address = str(_rf(h.get("streetLine"), "") or "").strip()
 
-                        # Sold date
                         sold_ts = _rf(h.get("soldDate"), None)
-                        if sold_ts:
-                            try:
-                                sold_date = _dt.fromtimestamp(
-                                    int(sold_ts) / 1000, tz=_tz.utc).strftime("%Y-%m-%d")
-                            except Exception:
-                                sold_date = _dt.now(_tz.utc).strftime("%Y-%m-%d")
-                        else:
+                        try:
+                            sold_date = _dt.fromtimestamp(
+                                int(sold_ts) / 1000, tz=_tz.utc).strftime("%Y-%m-%d") if sold_ts else _dt.now(_tz.utc).strftime("%Y-%m-%d")
+                        except Exception:
                             sold_date = _dt.now(_tz.utc).strftime("%Y-%m-%d")
 
-                        comp_id = _hashlib.md5(
-                            f"{address}{price}{sqft}".encode()).hexdigest()[:12]
-
+                        comp_id = _hashlib.md5(f"{address}{price}{sqft}".encode()).hexdigest()[:12]
                         all_comps.append({
                             "id":            comp_id,
                             "neighborhood":  nbhd,
