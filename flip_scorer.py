@@ -316,27 +316,30 @@ def score_color(score: int) -> str:
 
 def get_arv_breakdown(arv: int, neighborhood: str, sqft: int, property_type: str,
                        config: dict | None = None, arv_meta: dict | None = None) -> dict:
+    from database import get_model_config
+    cfg = config or get_model_config()
     
-    # 📊 בדיקה מוגנת: אם החישוב כבר בוצע דינמית על ידי ה-Comps Pipeline,
-    # נשמור על המילון הדינמי המלא ולא נדרוס אותו לפי הטבלה הסטטית.
+    # 📊 בדיקה מוגנת: אם החישוב כבר בוצע דינמית על ידי ה-Comps Pipeline
     if arv_meta and arv_meta.get("calculated_from_comps"):
+        # שליפת הנתון הדינמי שנשמר ב-data_fetcher
+        dynamic_psf = arv_meta.get("price_per_sqft", arv_meta.get("psf_used", 510))
+        comps_count = arv_meta.get("comps_count", arv_meta.get("n_comps", 0))
+        
         return {
             "estimated_arv": arv,
             "neighborhood": neighborhood,
-            "price_per_sqft": arv_meta.get("price_per_sqft"),
-            "static_psf": arv_meta.get("price_per_sqft"),  # או הפניה לטבלה הסטטית למחקר
+            "price_per_sqft": dynamic_psf,       # ✓ מיושר עבור פילטר ה-Checkbox ב-main.py
+            "static_psf": dynamic_psf,
             "sqft": sqft,
             "property_type_adjustment": arv_meta.get("property_type_adjustment", "No adjustment"),
-            "arv_method": "Live Comps Pipeline",
+            "arv_method": "Live Comps Pipeline",  # ✓ מוזרק כעת בצורה נקייה ל-UI
             "arv_confidence": "High (Live Market Data)",
-            "n_comps": arv_meta.get("comps_count", 0),
+            "n_comps": comps_count,               # ✓ מציג את כמות הקומפס האמיתית ב-Modal
         }
 
     # ---------------------------------------------------------------------------
     # הלוגיקה המקורית והמלאה שלך (Fallback סטטי כשאין קומפס גלויים באזור)
     # ---------------------------------------------------------------------------
-    from database import get_model_config
-    cfg = config or get_model_config()
     lookup = _build_nbhd_lookup(cfg["neighborhoods"])
     reno_cfg = cfg["reno_config"]
 
@@ -363,7 +366,6 @@ def get_arv_breakdown(arv: int, neighborhood: str, sqft: int, property_type: str
         "arv_confidence": meta.get("confidence", "static"),
         "n_comps": meta.get("n_comps", 0),
     }
-                           
 
 
 
