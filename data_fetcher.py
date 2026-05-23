@@ -722,9 +722,12 @@ async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int)
             if text.startswith("{}&&"):
                 text = text[4:]
             data = json.loads(text)
-            if data.get("errorMessage") != "Success":
+            err = data.get("errorMessage", "")
+            if err != "Success":
+                log.warning(f"Redfin [{region['name']}] API error: {err}")
                 break
             homes = data.get("payload", {}).get("homes", [])
+            log.info(f"Redfin [{region['name']}] p{params['page_number']}: {len(homes)} raw homes")
             for h in homes:
                 try:
                     prop = _normalize_redfin(h, max_price=max_price)
@@ -735,7 +738,7 @@ async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int)
         except Exception as e:
             log.warning(f"Redfin query failed for {region['name']}: {e}")
             break
-    log.info(f"Redfin [{region['name']}]: {len(region_results)} SFH fetched")
+    log.info(f"Redfin [{region['name']}]: {len(region_results)} SFH after filter")
     return region_results
 
 
@@ -770,27 +773,32 @@ async def fetch_redfin_listings(max_price: int = 1500000) -> list[dict]:
 
 async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
     """Fetch recently sold SFH comps from Redfin.
-    Uses REGIONS map for correct region_ids — no post-hoc name filtering.
+    Fetches sold listings per city region, then assigns neighborhood
+    based on the location field returned by Redfin.
     """
     import hashlib as _hashlib
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
 
-    # Build name→region_id lookup from REGIONS list
-    region_lookup = {r["name"].lower(): r["region_id"] for r in REGIONS}
+    # Only fetch from city-level regions (not sub-neighborhoods)
+    # We'll assign neighborhood from the location field in the response
+    COMP_REGIONS = [r for r in REGIONS if r["name"] in (
+        "Seattle", "Renton", "Burien", "Kent", "Auburn", "Tukwila",
+        "Bellevue", "Kirkland", "Redmond", "Bothell", "Shoreline",
+        "Federal Way", "Tacoma", "Everett", "Edmonds", "Lynnwood",
+    )]
 
     all_comps = []
 
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        for nbhd in neighborhoods:
-            region_id = region_lookup.get(nbhd.lower(), "16163")  # fallback Seattle
+        for region in COMP_REGIONS:
             params = {
                 "al": 1,
-                "num_homes": 100,
+                "num_homes": 150,
                 "page_number": 1,
                 "status": 3,
                 "uipt": "1",
                 "v": 8,
-                "region_id": region_id,
+                "region_id": region["region_id"],
                 "region_type": "6",
                 "sold_within_days": 180,
             }
@@ -803,11 +811,11 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
                 data = json.loads(text)
 
                 if data.get("errorMessage") != "Success":
-                    log.warning(f"Redfin comps error for {nbhd}: {data.get('errorMessage')}")
+                    log.warning(f"Redfin comps error for {region['name']}: {data.get('errorMessage')}")
                     continue
 
                 homes = data.get("payload", {}).get("homes", [])
-                log.info(f"Redfin comps [{nbhd}]: {len(homes)} sold homes")
+                log.info(f"Redfin comps [{region['name']}]: {len(homes)} sold homes")
 
                 for h in homes:
                     try:
@@ -822,6 +830,10 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
                         if any(s in remarks for s in ["as-is", "as is", "reo", "bank owned",
                                                        "short sale", "estate sale", "foreclosure"]):
                             continue
+
+                        # Use location field as neighborhood, fall back to city name
+                        location = str(_rf(h.get("location"), "") or "").strip()
+                        nbhd = location if location else region["name"]
 
                         psf = round(price / sqft, 2)
                         address = str(_rf(h.get("streetLine"), "") or "").strip()
@@ -848,7 +860,7 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
                         log.debug(f"Skipped comp: {e}")
 
             except Exception as e:
-                log.warning(f"Redfin comps fetch failed for {nbhd}: {e}")
+                log.warning(f"Redfin comps fetch failed for {region['name']}: {e}")
 
     log.info(f"Redfin comps: {len(all_comps)} usable sold comps across {len(neighborhoods)} neighborhoods")
     return all_comps
