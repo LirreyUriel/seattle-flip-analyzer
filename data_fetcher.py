@@ -247,19 +247,15 @@ def _generate_price_history(current_price: int, reductions: int, reduction_pct: 
                              dom: int, back_on_market: bool) -> list[dict]:
     """Generate 12-month price history for charting."""
     history = []
-    # Start price = current + reductions added back
     original_price = round(current_price / (1 - reduction_pct / 100)) if reduction_pct > 0 else current_price
     original_price = round(original_price / 5000) * 5000
 
-    # Date of first listing
     first_listed_date = datetime.now(timezone.utc) - timedelta(days=dom)
 
-    # Build monthly snapshots going back 12 months
     for months_ago in range(11, -1, -1):
         dt = datetime.now(timezone.utc) - timedelta(days=months_ago * 30)
         if dt < first_listed_date:
-            continue  # Property wasn't on market yet
-        # Step down price toward current as we approach today
+            continue
         months_into_listing = (dt - first_listed_date).days / 30
         total_listing_months = dom / 30
         if total_listing_months > 0:
@@ -410,7 +406,6 @@ def _normalize_zillow(p: dict) -> dict:
     zpid = p.get("zpid", "")
     year_built = int(p.get("yearBuilt", 1960) or 1960)
 
-    # Detect distress type
     desc_lower = description.lower()
     if "reo" in desc_lower or "bank owned" in desc_lower or "bank-owned" in desc_lower:
         distress_type = "REO"
@@ -525,12 +520,10 @@ REDFIN_HEADERS = {
     "Referer": "https://www.redfin.com/",
 }
 
-# uiPropertyType: 1=house, 2=condo, 3=townhouse, 4=multi
 _UI_PROP_TYPES = {1: "SFH", 2: "Condo", 3: "Townhouse", 4: "SFH"}
 
 
 def _rf(obj, fallback=None):
-    """Unwrap Redfin {value, level} dict or return raw value."""
     if obj is None:
         return fallback
     if isinstance(obj, dict):
@@ -541,32 +534,32 @@ def _rf(obj, fallback=None):
 
 def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     """Convert a Redfin GIS home object to our internal property format."""
-    # --- Price ---
-    price = int(_rf(h.get("price"), 0) or 0)
-    if price < 120000 or price > max_price:
-        return None
-
-    # --- Address: streetLine.value holds "123 Main St" ---
+    # --- Address Extraction First for Accurate Log Reporting ---
     address = str(_rf(h.get("streetLine"), "") or "").strip()
     unit = str(_rf(h.get("unitNumber"), "") or "").strip()
-    # Skip parking spaces / storage units
-    # if unit and re.match(r'^[A-Z]-?\d+$', unit.lstrip("#").strip()):
-    #    return None  # e.g. "P-160", "S-22"
-    # if unit and unit.lstrip("#").strip().startswith(("P-", "S-", "Storage", "Parking")):
-    #   return None
     if unit:
         address = f"{address} {unit}"
     if not address:
+        log.info("❌ Filtered out property: Empty address field")
         return None
 
-    # --- Neighborhood: location.value holds "Rainier Valley" etc. ---
+    # --- Price Filter ---
+    price = int(_rf(h.get("price"), 0) or 0)
+    if price < 120000:
+        log.info(f"❌ Filtered out '{address}': Price too low (${price})")
+        return None
+    if price > max_price:
+        log.info(f"❌ Filtered out '{address}': Price (${price}) exceeds max_price limit (${max_price})")
+        return None
+
+    # --- Neighborhood ---
     neighborhood = str(_rf(h.get("location"), "") or "").strip() or "Seattle"
 
-    # --- Property type via uiPropertyType ---
+    # --- Property Type ---
     ui_type = int(h.get("uiPropertyType", 1) or 1)
     prop_type = _UI_PROP_TYPES.get(ui_type, "SFH")
 
-    # --- Size metrics ---
+    # --- Size Metrics ---
     sqft = max(400, min(int(_rf(h.get("sqFt"), 1200) or 1200), 15000))
     lot_sqft = int(_rf(h.get("lotSize"), 0) or 0)
     beds = int(h.get("beds") or 3)
@@ -576,7 +569,7 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     # --- DOM ---
     dom = int(_rf(h.get("dom"), 0) or 0)
 
-    # --- Sashes: Redfin overlays like "Price Reduced", "Back on Market", "Foreclosure" ---
+    # --- Sashes / Redfin Overlays ---
     sashes = h.get("sashes") or []
     sash_names = " ".join(
         str(s.get("sashTypeName", "") if isinstance(s, dict) else s)
@@ -585,45 +578,34 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     price_reductions = 1 if "price" in sash_names and "reduc" in sash_names else 0
     price_drop_pct = 0.0
 
-    # --- Back on market ---
+    # --- Back on Market ---
     back_on_market = "back on market" in sash_names or bool(h.get("isBackOnMarket"))
 
-    # --- Listing description: listingRemarks is a raw string (not nested) ---
+    # --- Listing Description / Remarks ---
     remarks = str(h.get("listingRemarks") or "").strip()
-    # Enrich with listing tags
     tags_list = h.get("listingTags") or []
     if tags_list:
         tag_str = ", ".join(str(t) for t in tags_list).lower()
         if tag_str and tag_str not in remarks.lower():
             remarks = f"{remarks} [{tag_str}]".strip()
 
-    # --- Distress detection ---
+    # --- Distress Detection ---
     r = remarks.lower()
     tags = " ".join(str(t) for t in (h.get("listingTags") or [])).lower()
     listing_type = int(h.get("listingType", 0) or 0)
 
-    # listingType 6 = foreclosure/bank-owned on Redfin
-    # 1. עיקולים וכינוס (הכי קריטי)
     if listing_type == 6 or any(x in r for x in ["reo", "bank owned", "bank-owned", "foreclosure"]):
         distress_type = "REO"
-    
     elif "short sale" in r or "short sale" in tags:
         distress_type = "Short Sale"
-    
     elif "pre-foreclosure" in r:
         distress_type = "Pre-Foreclosure"
-    
     elif "estate sale" in r or "probate" in r:
         distress_type = "Estate Sale"
-    
     elif back_on_market:
         distress_type = "Back on Market"
-    
-    # 2. הזדמנויות Flip כלליות (אם אף אחד מהנ"ל לא קרה, אבל הבית צריך עבודה)
     elif any(x in r for x in ["fixer", "tlc", "needs work", "as-is", "as is", "handyman"]):
         distress_type = "Fixer-Upper"
-    
-    # 3. נכס רגיל
     else:
         distress_type = "Standard"
 
@@ -635,285 +617,10 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     propwire_query = quote_plus(f"{address}, {city_name}, WA")
     propwire_url = f"https://propwire.com/search?address={propwire_query}"
 
-    # SFH only
-    # if prop_type != "SFH":
-    #   return None
-
     seed = {
         "address": address,
         "neighborhood": neighborhood,
         "price": price,
         "beds": beds,
         "baths": baths,
-        "sqft": sqft,
-        "lot_sqft": lot_sqft,
-        "year_built": year_built,
-        "property_type": prop_type,
-        "distress_type": distress_type,
-        "dom": dom,
-        "price_reductions": price_reductions,
-        "price_reduction_pct": price_drop_pct,
-        "back_on_market": back_on_market,
-        "description": remarks,
-    }
-
-    prop = build_property(seed)
-    prop["source"] = "redfin"
-    prop["redfin_url"] = redfin_url
-    prop["zillow_url"] = zillow_url
-    prop["propwire_url"] = propwire_url
-
-    return prop
-
-
-# ---------------------------------------------------------------------------
-# Redfin region IDs — King, Pierce, Snohomish counties
-# ---------------------------------------------------------------------------
-REGIONS = [
-    # King County
-    {"name": "Seattle",          "region_id": "16163"},
-    {"name": "Renton",           "region_id": "16057"},
-    {"name": "Burien",           "region_id": "16742"},
-    {"name": "Kent",             "region_id": "16748"},
-    {"name": "Auburn",           "region_id": "16702"},
-    {"name": "Tukwila",          "region_id": "16170"},
-    {"name": "SeaTac",           "region_id": "16793"},
-    {"name": "Federal Way",      "region_id": "16732"},
-    {"name": "Shoreline",        "region_id": "16165"},
-    {"name": "Kenmore",          "region_id": "16747"},
-    {"name": "Bellevue",         "region_id": "16706"},
-    {"name": "Kirkland",         "region_id": "16749"},
-    {"name": "Redmond",          "region_id": "16786"},
-    {"name": "Bothell",          "region_id": "16712"},
-    {"name": "Des Moines",       "region_id": "16727"},
-    {"name": "Normandy Park",    "region_id": "16773"},
-    {"name": "Covington",        "region_id": "16724"},
-    {"name": "Maple Valley",     "region_id": "16758"},
-    {"name": "Black Diamond",    "region_id": "16709"},
-    {"name": "Enumclaw",         "region_id": "16730"},
-    # Pierce County
-    {"name": "Tacoma",           "region_id": "16817"},
-    {"name": "Lakewood",         "region_id": "16823"},
-    {"name": "Puyallup",         "region_id": "16834"},
-    {"name": "Bonney Lake",      "region_id": "16819"},
-    {"name": "Sumner",           "region_id": "16840"},
-    {"name": "Edgewood",         "region_id": "16821"},
-    {"name": "Milton",           "region_id": "16829"},
-    # Snohomish County
-    {"name": "Everett",          "region_id": "17026"},
-    {"name": "Marysville",       "region_id": "17036"},
-    {"name": "Mukilteo",         "region_id": "17039"},
-    {"name": "Edmonds",          "region_id": "17023"},
-    {"name": "Lynnwood",         "region_id": "17034"},
-    {"name": "Mountlake Terrace","region_id": "17038"},
-    {"name": "Mill Creek",       "region_id": "17037"},
-    {"name": "Snohomish",        "region_id": "17045"},
-]
-
-
-async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int) -> list[dict]:
-    """Fetch SFH listings for a single Redfin region."""
-    region_results = []
-    base = {
-        "al": 1, "num_homes": 150, "page_number": 1,
-        "status": 1, "uipt": "1",
-        "v": 8,
-        "region_id": region["region_id"], "region_type": "6",
-        "max_price": max_price,
-    }
-    queries = [
-        {**base, "ord": "price-asc"},
-        {**base, "ord": "price-asc", "page_number": 2},
-    ]
-    for params in queries:
-        try:
-            resp = await client.get(REDFIN_GIS_URL, params=params, headers=REDFIN_HEADERS)
-            resp.raise_for_status()
-            text = resp.text
-            if text.startswith("{}&&"):
-                text = text[4:]
-            data = json.loads(text)
-            err = data.get("errorMessage", "")
-            if err != "Success":
-                log.warning(f"Redfin [{region['name']}] API error: {err}")
-                break
-            homes = data.get("payload", {}).get("homes", [])
-            log.info(f"Redfin [{region['name']}] p{params['page_number']}: {len(homes)} raw homes")
-            for h in homes:
-                try:
-                    prop = _normalize_redfin(h, max_price=max_price)
-                    if prop:
-                        region_results.append(prop)
-                except Exception as e:
-                    log.debug(f"Skipped home in {region['name']}: {e}")
-        except Exception as e:
-            log.warning(f"Redfin query failed for {region['name']}: {e}")
-            break
-    log.info(f"Redfin [{region['name']}]: {len(region_results)} SFH after filter")
-    return region_results
-
-
-async def fetch_redfin_listings(max_price: int = 1500000) -> list[dict]:
-    """Fetch SFH listings from Redfin across King, Pierce, and Snohomish counties.
-    Each region is fetched concurrently. Results are deduplicated and sorted by flip score.
-    """
-    all_results = []
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        tasks = [_fetch_region(client, r, max_price) for r in REGIONS]
-        region_batches = await asyncio.gather(*tasks, return_exceptions=True)
-        for batch in region_batches:
-            if isinstance(batch, list):
-                all_results.extend(batch)
-
-    # Deduplicate by address
-    seen: set[str] = set()
-    unique = []
-    for p in all_results:
-        key = p["address"].lower().strip()
-        if key not in seen:
-            seen.add(key)
-            unique.append(p)
-
-    if not unique:
-        raise ValueError("Redfin returned 0 usable properties across all regions")
-
-    unique.sort(key=lambda x: x["flip_score"], reverse=True)
-    log.info(f"Redfin total: {len(unique)} unique SFH across {len(REGIONS)} regions")
-    return unique
-
-
-async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
-    """Fetch recently sold SFH comps from Redfin.
-    Fetches sold listings per city region, then assigns neighborhood
-    based on the location field returned by Redfin.
-    """
-    import hashlib as _hashlib
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-
-    # Only fetch from city-level regions (not sub-neighborhoods)
-    # We'll assign neighborhood from the location field in the response
-    COMP_REGIONS = [r for r in REGIONS if r["name"] in (
-        "Seattle", "Renton", "Burien", "Kent", "Auburn", "Tukwila",
-        "Bellevue", "Kirkland", "Redmond", "Bothell", "Shoreline",
-        "Federal Way", "Tacoma", "Everett", "Edmonds", "Lynnwood",
-    )]
-
-    all_comps = []
-
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        for region in COMP_REGIONS:
-            params = {
-                "al": 1,
-                "num_homes": 150,
-                "page_number": 1,
-                "status": 3,
-                "uipt": "1",
-                "v": 8,
-                "region_id": region["region_id"],
-                "region_type": "6",
-                "sold_within_days": 180,
-            }
-            try:
-                resp = await client.get(REDFIN_GIS_URL, params=params, headers=REDFIN_HEADERS)
-                resp.raise_for_status()
-                text = resp.text
-                if text.startswith("{}&&"):
-                    text = text[4:]
-                data = json.loads(text)
-
-                if data.get("errorMessage") != "Success":
-                    log.warning(f"Redfin comps error for {region['name']}: {data.get('errorMessage')}")
-                    continue
-
-                homes = data.get("payload", {}).get("homes", [])
-                log.info(f"Redfin comps [{region['name']}]: {len(homes)} sold homes")
-
-                for h in homes:
-                    try:
-                        price = int(_rf(h.get("price"), 0) or 0)
-                        sqft  = int(_rf(h.get("sqft"), 0) or 0)
-                        if price < 100000 or sqft < 400:
-                            continue
-
-                        # Skip distressed sales
-                        remarks = str(_rf(h.get("remarksAccessInfo"), "") or
-                                      _rf(h.get("listingRemarks"), "") or "").lower()
-                        if any(s in remarks for s in ["as-is", "as is", "reo", "bank owned",
-                                                       "short sale", "estate sale", "foreclosure"]):
-                            continue
-
-                        # Use location field as neighborhood, fall back to city name
-                        location = str(_rf(h.get("location"), "") or "").strip()
-                        nbhd = location if location else region["name"]
-
-                        psf = round(price / sqft, 2)
-                        address = str(_rf(h.get("streetLine"), "") or "").strip()
-
-                        sold_ts = _rf(h.get("soldDate"), None)
-                        try:
-                            sold_date = _dt.fromtimestamp(
-                                int(sold_ts) / 1000, tz=_tz.utc).strftime("%Y-%m-%d") if sold_ts else _dt.now(_tz.utc).strftime("%Y-%m-%d")
-                        except Exception:
-                            sold_date = _dt.now(_tz.utc).strftime("%Y-%m-%d")
-
-                        comp_id = _hashlib.md5(f"{address}{price}{sqft}".encode()).hexdigest()[:12]
-                        all_comps.append({
-                            "id":            comp_id,
-                            "neighborhood":  nbhd,
-                            "property_type": "SFH",
-                            "sold_price":    price,
-                            "sqft":          sqft,
-                            "psf":           psf,
-                            "sold_date":     sold_date,
-                            "address":       address,
-                        })
-                    except Exception as e:
-                        log.debug(f"Skipped comp: {e}")
-
-            except Exception as e:
-                log.warning(f"Redfin comps fetch failed for {region['name']}: {e}")
-
-    log.info(f"Redfin comps: {len(all_comps)} usable sold comps across {len(neighborhoods)} neighborhoods")
-    return all_comps
-
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-async def fetch_all_properties(api_key: str = "", max_price: int = 500000) -> list[dict]:
-    """
-    Priority: Zillow API (if key) → Redfin (real, no key) → demo data.
-    Returns up to 30 properties sorted by flip score.
-    """
-    # 1. Zillow via RapidAPI
-    if api_key:
-        try:
-            zillow = await fetch_zillow_listings(api_key)
-            kc = await fetch_king_county_foreclosures()
-            seen_addresses: set[str] = set()
-            merged = []
-            for p in zillow + kc:
-                if p.get("price", 0) > max_price:
-                    continue
-                key = p.get("address", "").lower().strip()
-                if key not in seen_addresses:
-                    seen_addresses.add(key)
-                    merged.append(p)
-            merged.sort(key=lambda x: x["flip_score"], reverse=True)
-            if merged:
-                return merged[:30]
-        except Exception as e:
-            log.warning(f"Zillow fetch failed: {e}")
-
-    # 2. Redfin (real live data, no API key needed)
-    try:
-        props = await fetch_redfin_listings(max_price=max_price)
-        return props[:30]
-    except Exception as e:
-        log.warning(f"Redfin fetch failed: {e} — falling back to demo data")
-
-    # 3. Demo fallback
-    properties = [build_property(s) for s in MOCK_SEEDS]
-    properties = [p for p in properties if p.get("price", 0) <= max_price]
-    properties.sort(key=lambda x: x["flip_score"], reverse=True)
-    return properties[:30]
+        "sq
