@@ -42,23 +42,66 @@ def _nbhd_key(neighborhood: str, lookup: dict) -> str:
 # ARV estimation
 # ---------------------------------------------------------------------------
 
+def _median(values: list[float]) -> float:
+    s = sorted(values)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
 def estimate_arv(neighborhood: str, sqft: int, property_type: str,
-                 config: dict | None = None) -> int:
-    from database import get_model_config
+                 config: dict | None = None) -> tuple[int, dict]:
+    """Returns (arv, arv_meta) where arv_meta explains how it was calculated."""
+    from database import get_model_config, get_comps_for_arv
     cfg = config or get_model_config()
     lookup = _build_nbhd_lookup(cfg["neighborhoods"])
     reno_cfg = cfg["reno_config"]
 
+    # ── Fallback PSF from config table ──────────────────────────────────────
     key = _nbhd_key(neighborhood, lookup)
     nbhd = lookup.get(key, lookup.get("default", {"arv_psf": 510}))
-    psf = nbhd["arv_psf"]
+    static_psf = nbhd["arv_psf"]
 
     discounts = reno_cfg.get("property_type_discounts", {"condo": 0.85, "townhouse": 0.95})
     pt = property_type.lower()
-    if pt in discounts:
-        psf = int(psf * discounts[pt])
+    discount = discounts.get(pt, 1.0)
 
-    return round(psf * sqft / 1000) * 1000
+    # ── Try comps from DB ────────────────────────────────────────────────────
+    comps = get_comps_for_arv(neighborhood, property_type, sqft)
+    n_comps = len(comps)
+
+    if n_comps >= 5:
+        psf_vals = [c["psf"] for c in comps]
+        comp_psf = _median(psf_vals)
+        final_psf = int(comp_psf * discount)
+        method = f"comps median ({n_comps} sales)"
+        confidence = "high"
+    elif n_comps >= 3:
+        psf_vals = [c["psf"] for c in comps]
+        comp_psf = _median(psf_vals)
+        final_psf = int(comp_psf * discount)
+        method = f"comps median ({n_comps} sales — low count)"
+        confidence = "medium"
+    elif n_comps >= 1:
+        psf_vals = [c["psf"] for c in comps]
+        comp_psf = _median(psf_vals)
+        blended_psf = (comp_psf + static_psf) / 2
+        final_psf = int(blended_psf * discount)
+        method = f"blended: {n_comps} comp(s) + static table (50/50)"
+        confidence = "low"
+    else:
+        final_psf = int(static_psf * discount)
+        method = "static table (no comps available)"
+        confidence = "static"
+
+    arv = round(final_psf * sqft / 1000) * 1000
+    arv_meta = {
+        "method": method,
+        "confidence": confidence,
+        "n_comps": n_comps,
+        "psf_used": final_psf,
+        "static_psf": static_psf,
+    }
+    return arv, arv_meta
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +316,7 @@ def score_color(score: int) -> str:
 
 
 def get_arv_breakdown(arv: int, neighborhood: str, sqft: int, property_type: str,
-                      config: dict | None = None) -> dict:
+                      config: dict | None = None, arv_meta: dict | None = None) -> dict:
     from database import get_model_config
     cfg = config or get_model_config()
     lookup = _build_nbhd_lookup(cfg["neighborhoods"])
@@ -290,12 +333,17 @@ def get_arv_breakdown(arv: int, neighborhood: str, sqft: int, property_type: str
         psf = int(psf * discounts[pt])
         adj_note = f"{int((1 - discounts[pt]) * 100)}% discount applied for {pt}"
 
+    meta = arv_meta or {}
     return {
         "estimated_arv": arv,
         "neighborhood": neighborhood,
-        "price_per_sqft": psf,
+        "price_per_sqft": meta.get("psf_used", psf),
+        "static_psf": meta.get("static_psf", psf),
         "sqft": sqft,
         "property_type_adjustment": adj_note,
+        "arv_method": meta.get("method", "static table"),
+        "arv_confidence": meta.get("confidence", "static"),
+        "n_comps": meta.get("n_comps", 0),
     }
 
 
