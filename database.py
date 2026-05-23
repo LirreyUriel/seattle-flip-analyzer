@@ -249,12 +249,16 @@ def upsert_comps(comps: list[dict]):
 
 def get_comps_for_arv(neighborhood: str, property_type: str,
                       sqft: int, days: int = 180) -> list[dict]:
-    """Return comps matching neighborhood + type + sqft ±20%, within `days`."""
+    """Return comps matching neighborhood + type + sqft ±20%, within `days`.
+    Uses fuzzy matching — Redfin location field may not exactly match our neighborhood names.
+    """
     from datetime import datetime, timedelta, timezone
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     sqft_min = int(sqft * 0.80)
     sqft_max = int(sqft * 1.20)
     c = _conn()
+
+    # Try exact match first
     rows = c.execute(
         """SELECT * FROM comps
            WHERE neighborhood = ?
@@ -263,6 +267,21 @@ def get_comps_for_arv(neighborhood: str, property_type: str,
              AND sold_date >= ?""",
         (neighborhood, property_type, sqft_min, sqft_max, cutoff),
     ).fetchall()
+
+    if not rows:
+        # Fuzzy: neighborhood name contained in comp neighborhood or vice versa
+        all_rows = c.execute(
+            """SELECT * FROM comps
+               WHERE property_type = ?
+                 AND sqft BETWEEN ? AND ?
+                 AND sold_date >= ?""",
+            (property_type, sqft_min, sqft_max, cutoff),
+        ).fetchall()
+        nbhd_lower = neighborhood.lower()
+        rows = [r for r in all_rows
+                if nbhd_lower in r["neighborhood"].lower()
+                or r["neighborhood"].lower() in nbhd_lower]
+
     return [dict(r) for r in rows]
 
 
