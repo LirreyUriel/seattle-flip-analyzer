@@ -143,6 +143,18 @@ def init_db():
             status      TEXT NOT NULL DEFAULT 'new',
             updated_at  TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS comps (
+            id            TEXT PRIMARY KEY,
+            neighborhood  TEXT NOT NULL,
+            property_type TEXT NOT NULL,
+            sold_price    INTEGER NOT NULL,
+            sqft          INTEGER NOT NULL,
+            psf           REAL NOT NULL,
+            sold_date     TEXT NOT NULL,
+            address       TEXT,
+            fetched_at    TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_comps_nbhd ON comps (neighborhood, property_type);
         CREATE TABLE IF NOT EXISTS meta (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
@@ -210,6 +222,54 @@ def update_property_scores(props: list[dict]):
         [(json.dumps(p), p["id"]) for p in props],
     )
     c.commit()
+
+
+# ---------------------------------------------------------------------------
+# Comps
+# ---------------------------------------------------------------------------
+
+def upsert_comps(comps: list[dict]):
+    """Replace all comps with fresh data."""
+    c = _conn()
+    ts = now_iso()
+    c.execute("DELETE FROM comps")
+    c.executemany(
+        """INSERT OR REPLACE INTO comps
+           (id, neighborhood, property_type, sold_price, sqft, psf, sold_date, address, fetched_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [(
+            comp["id"], comp["neighborhood"], comp["property_type"],
+            comp["sold_price"], comp["sqft"], comp["psf"],
+            comp["sold_date"], comp.get("address", ""), ts,
+        ) for comp in comps],
+    )
+    c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('comps_last_updated', ?)", (ts,))
+    c.commit()
+
+
+def get_comps_for_arv(neighborhood: str, property_type: str,
+                      sqft: int, days: int = 180) -> list[dict]:
+    """Return comps matching neighborhood + type + sqft ±20%, within `days`."""
+    from datetime import datetime, timedelta, timezone
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    sqft_min = int(sqft * 0.80)
+    sqft_max = int(sqft * 1.20)
+    c = _conn()
+    rows = c.execute(
+        """SELECT * FROM comps
+           WHERE neighborhood = ?
+             AND property_type = ?
+             AND sqft BETWEEN ? AND ?
+             AND sold_date >= ?""",
+        (neighborhood, property_type, sqft_min, sqft_max, cutoff),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_comps_last_updated() -> str | None:
+    c = _conn()
+    row = c.execute("SELECT value FROM meta WHERE key = 'comps_last_updated'").fetchone()
+    return row["value"] if row else None
 
 
 # ---------------------------------------------------------------------------
