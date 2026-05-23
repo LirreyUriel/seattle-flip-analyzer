@@ -1026,7 +1026,7 @@ async function saveSettings() {
   btn.disabled = true;
   btn.textContent = '⏳ Saving…';
   try {
-    const maxPrice = parseInt(document.getElementById('settings-max-price').value) || 500000;
+    const maxPrice = parseInt(document.getElementById('settings-max-price').value) || 1500000;
     const payload = { ...currentSettings, max_price: maxPrice };
     const res = await apiFetch('/api/settings', {
       method: 'POST',
