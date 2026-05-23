@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -10,6 +10,62 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
+    /* ── Light mode CSS variables ─────────────────────────────── */
+    :root, [data-theme="dark"] {
+      --bg:          #0f1117;
+      --surface:     #1a1d27;
+      --surface2:    #22263a;
+      --border:      #2e3250;
+      --text:        #e2e8f0;
+      --text-muted:  #8892a4;
+      --accent:      #4f8ef7;
+      --green:       #22c55e;
+      --yellow:      #f59e0b;
+      --red:         #ef4444;
+    }
+    [data-theme="light"] {
+      --bg:          #f4f6fa;
+      --surface:     #ffffff;
+      --surface2:    #f0f2f8;
+      --border:      #d1d5e0;
+      --text:        #1a1d2e;
+      --text-muted:  #6b7280;
+      --accent:      #2563eb;
+      --green:       #16a34a;
+      --yellow:      #d97706;
+      --red:         #dc2626;
+    }
+    [data-theme="light"] .header { background: #fff; border-bottom: 1px solid var(--border); }
+    [data-theme="light"] .filter-bar { background: #fff; }
+    [data-theme="light"] .property-card { background: #fff; }
+    [data-theme="light"] .modal { background: #fff; }
+    [data-theme="light"] .comp-table tbody tr:hover td { background: #f8f9fc; }
+    [data-theme="light"] .map-panel { background: #e8eaf0; }
+
+    /* ── External link pills (modal header) ──────────────────── */
+    .modal-ext-links { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+    .ext-link-pill {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
+      text-decoration: none; border: 1px solid var(--border);
+      background: var(--surface2); color: var(--text-muted);
+      transition: background .15s, color .15s;
+    }
+    .ext-link-pill:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .ext-link-pill svg { fill: currentColor; flex-shrink: 0; }
+    .ext-link-propwire { border-color: #7c3aed44; }
+    .ext-link-propwire:hover { background: #7c3aed; border-color: #7c3aed; }
+
+    /* ── ARV confidence badge ─────────────────────────────────── */
+    .arv-confidence {
+      display: inline-block; padding: 1px 8px; border-radius: 10px;
+      font-size: 10px; font-weight: 700; text-transform: uppercase; margin-left: 6px;
+    }
+    .arv-conf-high   { background: rgba(34,197,94,.15);  color: var(--green); }
+    .arv-conf-medium { background: rgba(245,158,11,.15); color: var(--yellow); }
+    .arv-conf-low    { background: rgba(239,68,68,.15);  color: var(--red); }
+    .arv-conf-static { background: var(--surface2);      color: var(--text-muted); }
+
     /* ── Status Badge ─────────────────────────────────────────── */
     .status-badge {
       display: inline-block; padding: 2px 10px; border-radius: 12px;
@@ -22,6 +78,10 @@
     .status-waiting    { background: #3d2e00; color: #fbbf24; border: 1px solid #78530a; }
     .status-ongoing    { background: #0d3320; color: #4ade80; border: 1px solid #166534; }
     .status-irrelevant { background: #2a2a2a; color: #888; border: 1px solid #444; }
+    [data-theme="light"] .status-new        { background: #dbeafe; color: #1d4ed8; border-color: #93c5fd; }
+    [data-theme="light"] .status-waiting    { background: #fef3c7; color: #92400e; border-color: #fcd34d; }
+    [data-theme="light"] .status-ongoing    { background: #dcfce7; color: #166534; border-color: #86efac; }
+    [data-theme="light"] .status-irrelevant { background: #f3f4f6; color: #6b7280; border-color: #d1d5db; }
     .card-footer-row {
       display: flex; align-items: center; justify-content: space-between;
       margin-top: .5rem; padding-top: .4rem; border-top: 1px solid var(--border);
@@ -120,6 +180,7 @@
     <button class="btn" id="map-toggle-btn" title="Toggle map">🗺 Map</button>
     <button class="btn" id="settings-btn" title="Score Settings">⚙ Settings</button>
     <button class="btn" id="config-btn" title="Model Config">🔧 Model Config</button>
+    <button class="btn" id="theme-toggle-btn" title="Toggle light/dark mode">☀ Light</button>
     <button class="btn btn-primary" id="refresh-btn">↻ Refresh</button>
   </div>
 </header>
