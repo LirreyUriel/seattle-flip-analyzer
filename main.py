@@ -134,6 +134,7 @@ async def list_properties(
         p["note"] = database.get_note(p["id"])
         p["status"] = statuses.get(p["id"], "new")
 
+    # Filter
     filtered = []
     for p in props:
         if not (min_score <= p.get("flip_score", 0) <= max_score):
@@ -151,14 +152,13 @@ async def list_properties(
         if status_filter and p.get("status") != status_filter:
             continue
             
-        # 📊 פילטר קומפס חכם: משאיר רק נכסים שבהם נמצאו קומפס אמיתיים בשטח
-        if comps_only:
-            arv_bd = p.get("arv_breakdown", {})
-            # אם אין breakdown, או שכמות הקומפס היא 0, או ששיטת החישוב היא סטטית -> תסנן החוצה
-            if not arv_bd or arv_bd.get("n_comps", 0) == 0 or "static" in arv_bd.get("arv_method", "").lower():
-                continue
+        # 📊 תנאי סף נוקשה: המערכת פוסלת אוטומטית כל נכס שלא חושבו עבורו קומפס אמת בשטח
+        arv_bd = p.get("arv_breakdown", {})
+        if not arv_bd or arv_bd.get("n_comps", 0) == 0 or "static" in arv_bd.get("arv_method", "").lower():
+            continue  # פוסל את הנכס וממשיך לבית הבא בטבלה
 
         filtered.append(p)
+        
 
     sort_key_map = {"score": "flip_score", "price": "price", "dom": "dom", "roi": "roi_pct"}
     key = sort_key_map.get(sort_by, "flip_score")
