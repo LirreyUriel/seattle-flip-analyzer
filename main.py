@@ -167,7 +167,7 @@ async def list_properties(
         if comps_only:
             arv_bd = p.get("arv_breakdown", {})
             # אם אין מחיר למטר רבוע מבוסס קומפס, או שהנכס לא סומן כחישוב מקומפס, נדלג עליו
-            if not arv_bd or not arv_bd.get("price_per_sqft"):
+        if not arv_bd or not arv_bd.get("price_per_sqft"):
             continue
         filtered.append(p)
 
@@ -175,7 +175,7 @@ async def list_properties(
     key = sort_key_map.get(sort_by, "flip_score")
     reverse = sort_dir.lower() != "asc"
     filtered.sort(key=lambda x: x.get(key, 0), reverse=reverse)
-
+    final_properties = filtered[:MAX_PROPERTIES]
     return {"properties": filtered, "total": len(filtered)}
 
 
