@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "")
 REFRESH_HOURS = int(os.getenv("REFRESH_HOURS", "3"))
-MAX_PROPERTIES = int(os.getenv("MAX_PROPERTIES", "30"))
+MAX_PROPERTIES = int(os.getenv("MAX_PROPERTIES", "200"))
 
 _refresh_lock = asyncio.Lock()
 _comps_lock   = asyncio.Lock()
@@ -131,7 +131,7 @@ async def list_properties(
     neighborhood: str = Query(""),
     distress_type: str = Query(""),
     min_price: int = Query(0, ge=0),
-    max_price: int = Query(500000, ge=0),
+    max_price: int = Query(1500000, ge=0),
     property_type: str = Query(""),
     status_filter: str = Query(""),          # new | waiting | ongoing | irrelevant
     sort_by: str = Query("score"),            # score | price | dom | roi
@@ -254,7 +254,7 @@ class SettingsPayload(BaseModel):
     w_market_velocity: float
     w_distress:        float
     w_neighborhood:    float
-    max_price:         int = 500000
+    max_price:         int = 1500000
 
 
 @app.get("/api/settings")
