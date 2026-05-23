@@ -151,10 +151,11 @@ async def list_properties(
         if status_filter and p.get("status") != status_filter:
             continue
             
-        # 📊 סינון קומפס דינמי מיושר ותקין מבחינת רווחים (הזחה של 8 ו-12 רווחים)
+        # 📊 פילטר קומפס חכם ובטוח: משאיר רק נכסים שבהם נמצאו קומפס אמיתיים בשטח
         if comps_only:
             arv_bd = p.get("arv_breakdown", {})
-            if not arv_bd or not arv_bd.get("price_per_sqft"):
+            # אם אין breakdown, או ששיטת החישוב היא הטבלה הסטטית, או שכמות הקומפס היא 0 -> תסנן החוצה
+            if not arv_bd or "static" in arv_bd.get("arv_method", "").lower() or arv_bd.get("n_comps", 0) == 0:
                 continue
 
         filtered.append(p)
