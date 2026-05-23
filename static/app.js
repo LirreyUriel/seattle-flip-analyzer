@@ -12,7 +12,7 @@ let activeFilters = {
   min_score: 0, max_score: 100,
   neighborhood: '',
   distress_type: '',
-  min_price: 0, max_price: 500000,
+  min_price: 0, max_price: 1500000,
   property_type: '',
   status_filter: '',
   sort_by: 'score',
@@ -871,7 +871,7 @@ function bindFilters() {
     activeFilters = {
       min_score: 0, max_score: 100,
       neighborhood: '', distress_type: '', property_type: '',
-      min_price: 0, max_price: 500000,
+      min_price: 0, max_price: 1500000,
       sort_by: 'score', sort_dir: 'desc', favorites_only: false,
     };
     get('filter-score').value = 0;
@@ -880,7 +880,7 @@ function bindFilters() {
     get('filter-distress').value = '';
     get('filter-type').value = '';
     get('price-min').value = 0;
-    get('price-max').value = 500000;
+    get('price-max').value = 1500000;
     get('sort-by').value = 'score';
     get('sort-dir').value = 'desc';
     get('filter-favs').checked = false;
