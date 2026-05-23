@@ -295,14 +295,17 @@ def build_property(seed: dict) -> dict:
     year_built = seed["year_built"]
     description = seed["description"]
 
-    arv = estimate_arv(neighborhood, sqft, prop_type)
+    arv, arv_meta = estimate_arv(neighborhood, sqft, prop_type)
     reno_cost, reno_breakdown, reno_level = estimate_renovation(description, sqft, year_built)
     roi = calculate_roi(price, arv, reno_cost)
     _, found_keywords = count_distress_keywords(description)
 
+    address = seed["address"]
+    addr_slug = address.lower().replace(" ", "-").replace(",", "").replace(".", "").replace("#", "")
+
     prop = {
-        "id": _make_id(seed["address"]),
-        "address": seed["address"],
+        "id": _make_id(address),
+        "address": address,
         "neighborhood": neighborhood,
         "price": price,
         "beds": seed["beds"],
@@ -328,9 +331,10 @@ def build_property(seed: dict) -> dict:
         "roi_pct": roi,
         "zillow_url": _zillow_url_demo(neighborhood),
         "redfin_url": _redfin_url_demo(neighborhood),
+        "propwire_url": f"https://propwire.com/listings?address={addr_slug}-seattle-wa",
         "source": "demo",
-        "lat": _address_coords(seed["address"], neighborhood)[0],
-        "lng": _address_coords(seed["address"], neighborhood)[1],
+        "lat": _address_coords(address, neighborhood)[0],
+        "lng": _address_coords(address, neighborhood)[1],
         "price_history": _generate_price_history(
             price, seed["price_reductions"], seed["price_reduction_pct"],
             seed["dom"], seed["back_on_market"]
@@ -339,16 +343,10 @@ def build_property(seed: dict) -> dict:
 
     prop["flip_score"] = calculate_flip_score(prop)
     prop["score_color"] = score_color(prop["flip_score"])
-    prop["arv_breakdown"] = get_arv_breakdown(arv, neighborhood, sqft, prop_type)
-
-    # Estimated holding costs (King County approximations)
-    if prop_type == "Condo":
-        prop["hoa_monthly"] = max(200, min(600, round(sqft * 0.35 / 10) * 10))
-    elif prop_type == "Townhouse":
-        prop["hoa_monthly"] = max(150, min(400, round(sqft * 0.18 / 10) * 10))
-    else:
-        prop["hoa_monthly"] = 0
-    prop["tax_annual"] = round(price * 0.011 / 100) * 100   # King County avg ~1.1%
+    prop["arv_breakdown"] = get_arv_breakdown(arv, neighborhood, sqft, prop_type,
+                                               arv_meta=arv_meta)
+    prop["hoa_monthly"] = 0
+    prop["tax_annual"] = round(price * 0.011 / 100) * 100
     prop["buyers_agent_pct"] = 2.5
 
     return prop
@@ -623,6 +621,11 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     city = str(h.get("city", "seattle")).lower()
     addr_slug = address.lower().replace(" ", "-").replace(",", "").replace(".", "").replace("#", "")
     zillow_url = f"https://www.zillow.com/homes/{addr_slug}-{city}-wa/"
+    propwire_url = f"https://propwire.com/listings?address={addr_slug}-{city}-wa"
+
+    # SFH only
+    if prop_type != "SFH":
+        return None
 
     seed = {
         "address": address,
@@ -646,6 +649,7 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     prop["source"] = "redfin"
     prop["redfin_url"] = redfin_url
     prop["zillow_url"] = zillow_url
+    prop["propwire_url"] = propwire_url
 
     return prop
 
@@ -712,6 +716,100 @@ async def fetch_redfin_listings(max_price: int = 500000) -> list[dict]:
     unique.sort(key=lambda x: x["flip_score"], reverse=True)
     log.info(f"Redfin: {len(unique)} unique Seattle properties fetched")
     return unique
+
+
+async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
+    """Fetch recently sold SFH comps from Redfin for each neighborhood.
+    Uses status=3 (sold), uipt=1 (houses only), sold_within_days=180.
+    Returns list of comp dicts ready for database.upsert_comps().
+    """
+    import hashlib as _hashlib
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    all_comps = []
+
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        for nbhd in neighborhoods:
+            params = {
+                "al": 1,
+                "num_homes": 100,
+                "page_number": 1,
+                "status": 3,           # sold
+                "uipt": "1",           # houses only
+                "v": 8,
+                "region_id": "16163",
+                "region_type": "6",
+                "sold_within_days": 180,
+            }
+            try:
+                resp = await client.get(REDFIN_GIS_URL, params=params, headers=REDFIN_HEADERS)
+                resp.raise_for_status()
+                text = resp.text
+                if text.startswith("{}&&"):
+                    text = text[4:]
+                data = json.loads(text)
+
+                if data.get("errorMessage") != "Success":
+                    log.warning(f"Redfin comps error for {nbhd}: {data.get('errorMessage')}")
+                    continue
+
+                homes = data.get("payload", {}).get("homes", [])
+                log.info(f"Redfin comps: {len(homes)} sold homes fetched (filtering for {nbhd})")
+
+                for h in homes:
+                    try:
+                        price = int(_rf(h.get("price"), 0) or 0)
+                        sqft  = int(_rf(h.get("sqft"), 0) or 0)
+                        if price < 100000 or sqft < 400:
+                            continue
+
+                        location = str(_rf(h.get("location"), "") or "").strip().lower()
+                        if nbhd.lower() not in location and location not in nbhd.lower():
+                            continue
+
+                        # Skip distressed sales (they'd pull ARV down)
+                        remarks = str(_rf(h.get("remarksAccessInfo"), "") or
+                                      _rf(h.get("listingRemarks"), "") or "").lower()
+                        distress_signals = ["as-is", "as is", "reo", "bank owned",
+                                            "short sale", "estate sale", "foreclosure"]
+                        if any(s in remarks for s in distress_signals):
+                            continue
+
+                        psf = round(price / sqft, 2)
+                        address = str(_rf(h.get("streetLine"), "") or "").strip()
+
+                        # Sold date
+                        sold_ts = _rf(h.get("soldDate"), None)
+                        if sold_ts:
+                            try:
+                                sold_date = _dt.fromtimestamp(
+                                    int(sold_ts) / 1000, tz=_tz.utc).strftime("%Y-%m-%d")
+                            except Exception:
+                                sold_date = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+                        else:
+                            sold_date = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+
+                        comp_id = _hashlib.md5(
+                            f"{address}{price}{sqft}".encode()).hexdigest()[:12]
+
+                        all_comps.append({
+                            "id":            comp_id,
+                            "neighborhood":  nbhd,
+                            "property_type": "SFH",
+                            "sold_price":    price,
+                            "sqft":          sqft,
+                            "psf":           psf,
+                            "sold_date":     sold_date,
+                            "address":       address,
+                        })
+                    except Exception as e:
+                        log.debug(f"Skipped comp: {e}")
+
+            except Exception as e:
+                log.warning(f"Redfin comps fetch failed for {nbhd}: {e}")
+
+    log.info(f"Redfin comps: {len(all_comps)} usable sold comps across {len(neighborhoods)} neighborhoods")
+    return all_comps
 
 
 # ---------------------------------------------------------------------------
