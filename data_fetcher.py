@@ -855,16 +855,22 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
                 for h in homes:
                     try:
                         price = int(_rf(h.get("price"), 0) or 0)
-                        sqft  = int(_rf(h.get("sqft"), 0) or 0)
+                        
+                        # רדפין לפעמים משנה את שם השדה של השטח בתוך ה-payload של ה-comps ל-sqFt (עם F גדולה) או sqft
+                        sqft  = int(_rf(h.get("sqft"), 0) or _rf(h.get("sqFt"), 0) or 0)
+                        
                         if price < 100000 or sqft < 400:
                             continue
 
-                        remarks = str(_rf(h.get("remarksAccessInfo"), "") or
-                                      _rf(h.get("listingRemarks"), "") or "").lower()
-                        if any(s in remarks for s in ["as-is", "as is", "reo", "bank owned",
+                        # 🛠️ תיקון חסימת התיאור: אם השדה חסר, לא נפסול את הבית אלא נמשיך הלאה
+                        raw_remarks = _rf(h.get("remarksAccessInfo"), "") or _rf(h.get("listingRemarks"), "") or ""
+                        remarks = str(raw_remarks).lower()
+                        
+                        if remarks and any(s in remarks for s in ["as-is", "as is", "reo", "bank owned",
                                                        "short sale", "estate sale", "foreclosure"]):
                             continue
 
+                        # Use location field as neighborhood, fall back to city name
                         location = str(_rf(h.get("location"), "") or "").strip()
                         nbhd = location if location else region["name"]
 
@@ -890,7 +896,8 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
                             "address":       address,
                         })
                     except Exception as e:
-                        log.debug(f"Skipped comp: {e}")
+                        log.debug(f"Skipped comp processing: {e}")
+
             except Exception as e:
                 log.warning(f"Redfin comps fetch failed for {region['name']}: {e}")
 
