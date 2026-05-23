@@ -314,9 +314,27 @@ def score_color(score: int) -> str:
         return "yellow"
     return "red"
 
-
 def get_arv_breakdown(arv: int, neighborhood: str, sqft: int, property_type: str,
-                      config: dict | None = None, arv_meta: dict | None = None) -> dict:
+                       config: dict | None = None, arv_meta: dict | None = None) -> dict:
+    
+    # 📊 בדיקה מוגנת: אם החישוב כבר בוצע דינמית על ידי ה-Comps Pipeline,
+    # נשמור על המילון הדינמי המלא ולא נדרוס אותו לפי הטבלה הסטטית.
+    if arv_meta and arv_meta.get("calculated_from_comps"):
+        return {
+            "estimated_arv": arv,
+            "neighborhood": neighborhood,
+            "price_per_sqft": arv_meta.get("price_per_sqft"),
+            "static_psf": arv_meta.get("price_per_sqft"),  # או הפניה לטבלה הסטטית למחקר
+            "sqft": sqft,
+            "property_type_adjustment": arv_meta.get("property_type_adjustment", "No adjustment"),
+            "arv_method": "Live Comps Pipeline",
+            "arv_confidence": "High (Live Market Data)",
+            "n_comps": arv_meta.get("comps_count", 0),
+        }
+
+    # ---------------------------------------------------------------------------
+    # הלוגיקה המקורית והמלאה שלך (Fallback סטטי כשאין קומפס גלויים באזור)
+    # ---------------------------------------------------------------------------
     from database import get_model_config
     cfg = config or get_model_config()
     lookup = _build_nbhd_lookup(cfg["neighborhoods"])
@@ -345,6 +363,8 @@ def get_arv_breakdown(arv: int, neighborhood: str, sqft: int, property_type: str
         "arv_confidence": meta.get("confidence", "static"),
         "n_comps": meta.get("n_comps", 0),
     }
+                           
+
 
 
 # ---------------------------------------------------------------------------
