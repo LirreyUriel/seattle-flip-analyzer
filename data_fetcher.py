@@ -300,17 +300,36 @@ def build_property(seed: dict, comps: list[dict] = None) -> dict:
         # מיפוי חכם: אם השכונה היא חלק מסיאטל, או שיש הכלה בין שמות האזורים
         n_low = neighborhood.lower().strip()
         seattle_sub_neighborhoods = ["rainier valley", "beacon hill", "white center", "delridge", "georgetown", "columbia city", "lake city", "northgate", "bitter lake"]
-        
+
+        # ── שלב 1: ניסיון התאמה לפי שכונה ──────────────────────────────────────
         matched_comps = []
+        match_scope = ""
         for c in comps:
             c_nbhd = c.get("neighborhood", "").lower().strip()
             if c_nbhd == n_low or (c_nbhd == "seattle" and n_low in seattle_sub_neighborhoods) or (n_low in c_nbhd or c_nbhd in n_low):
                 matched_comps.append(c)
+        if matched_comps:
+            match_scope = "neighborhood"
+
+        # ── שלב 2: Fallback לפי סוג נכס (כל העיר/אזור) ─────────────────────────
+        if not matched_comps:
+            same_type = [c for c in comps if c.get("property_type", "SFH") == prop_type]
+            if len(same_type) >= 3:
+                matched_comps = same_type
+                match_scope = f"city-wide {prop_type}"
+
+        # ── שלב 3: Fallback אחרון — כל הקומפס הזמינים ──────────────────────────
+        if not matched_comps and len(comps) >= 3:
+            matched_comps = list(comps)
+            match_scope = "city-wide (all types)"
 
         if matched_comps:
-            avg_psf = sum(c["psf"] for c in matched_comps) / len(matched_comps)
+            # שימוש בחציון להגנה מפני outliers בכמויות גדולות
+            psf_values = sorted(c["psf"] for c in matched_comps)
+            mid = len(psf_values) // 2
+            avg_psf = psf_values[mid] if len(psf_values) % 2 else (psf_values[mid - 1] + psf_values[mid]) / 2
             base_arv = avg_psf * sqft
-            
+
             if prop_type == "Townhouse":
                 base_arv *= 0.95
                 adjustment_label = "-5% Townhouse Adjustment"
@@ -319,17 +338,18 @@ def build_property(seed: dict, comps: list[dict] = None) -> dict:
                 adjustment_label = "-15% Condo Adjustment"
             else:
                 adjustment_label = "No adjustment (SFH)"
-                
+
             arv = int(base_arv)
             arv_meta = {
                 "price_per_sqft": round(avg_psf, 2),
                 "sqft": sqft,
                 "property_type_adjustment": adjustment_label,
                 "calculated_from_comps": True,
-                "comps_count": len(matched_comps)
+                "comps_count": len(matched_comps),
+                "match_scope": match_scope,
             }
             arv_calculated = True
-            log.info(f"🎯 חושב ARV דינמי עבור {seed['address']} לפי {len(matched_comps)} קומפס. מחיר ממוצע: ${round(avg_psf, 2)}")
+            log.info(f"🎯 ARV דינמי לכתובת {seed['address']} מ-{len(matched_comps)} קומפס ({match_scope}). חציון PSF: ${round(avg_psf, 2)}")
 
     if not arv_calculated:
         arv, arv_meta = estimate_arv(neighborhood, sqft, prop_type)
@@ -384,10 +404,19 @@ def build_property(seed: dict, comps: list[dict] = None) -> dict:
     prop["score_color"] = score_color(prop["flip_score"])
     
     if arv_meta.get("calculated_from_comps"):
+        scope = arv_meta.get("match_scope", "neighborhood")
+        method_label = "Live Comps Pipeline" if scope == "neighborhood" else f"Live Comps Pipeline ({scope})"
+        confidence = "High (Live Market Data)" if scope == "neighborhood" else "Medium (city-wide fallback)"
         prop["arv_breakdown"] = {
+            "estimated_arv": arv,
+            "neighborhood": neighborhood,
             "price_per_sqft": arv_meta["price_per_sqft"],
+            "static_psf": arv_meta["price_per_sqft"],
             "sqft": arv_meta["sqft"],
-            "property_type_adjustment": arv_meta["property_type_adjustment"]
+            "property_type_adjustment": arv_meta["property_type_adjustment"],
+            "arv_method": method_label,
+            "arv_confidence": confidence,
+            "n_comps": arv_meta["comps_count"],
         }
     else:
         prop["arv_breakdown"] = get_arv_breakdown(arv, neighborhood, sqft, prop_type, arv_meta=arv_meta)
@@ -818,7 +847,7 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
         for region in COMP_REGIONS:
             params = {
                 "al": 1, "num_homes": 150, "page_number": 1,
-                "status": 3, "uipt": "1", "v": 8,
+                "status": 3, "uipt": "1,2,3", "v": 8,   # SFH + Condo + Townhouse
                 "region_id": region["region_id"], "region_type": "6",
                 "sold_within_days": 180,
             }
@@ -865,16 +894,20 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
                         except Exception:
                             sold_date = _dt.now(_tz.utc).strftime("%Y-%m-%d")
 
+                        comp_ui_type = int(h.get("uiPropertyType", 1) or 1)
+                        comp_prop_type = _UI_PROP_TYPES.get(comp_ui_type, "SFH")
+
                         comp_id = _hashlib.md5(f"{address}{price}{sqft}".encode()).hexdigest()[:12]
                         all_comps.append({
                             "id":            comp_id,
                             "neighborhood":  nbhd,
-                            "property_type": "SFH",
+                            "property_type": comp_prop_type,
                             "sold_price":    price,
                             "sqft":          sqft,
                             "psf":           psf,
                             "sold_date":     sold_date,
                             "address":       address,
+                            "region":        region["name"],   # ✓ לשרשור fallback אזורי
                         })
                     except Exception as e:
                         log.debug(f"Skipped comp processing: {e}")

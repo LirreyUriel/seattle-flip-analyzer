@@ -46,7 +46,7 @@ async def refresh_comps():
             ]
             comps = await fetch_redfin_comps(neighborhoods)
             if comps:
-                database.save_comps(comps)
+                database.upsert_comps(comps)
                 log.info(f"Comps updated: {len(comps)} records")
             else:
                 log.warning("No comps returned — keeping existing data")
@@ -151,11 +151,14 @@ async def list_properties(
             continue
         if status_filter and p.get("status") != status_filter:
             continue
-            
-        # 📊 תנאי סף נוקשה: המערכת פוסלת אוטומטית כל נכס שלא חושבו עבורו קומפס אמת בשטח
-        arv_bd = p.get("arv_breakdown", {})
-        if not arv_bd or arv_bd.get("n_comps", 0) == 0 or "static" in arv_bd.get("arv_method", "").lower():
-            continue  # פוסל את הנכס וממשיך לבית הבא בטבלה
+
+        # 📊 סינון "Only with Comps" — חל רק כאשר הצ'קבוקס דלוק.
+        # מבלי כך הנכסים שאין להם קומפס נשארים בתוצאות (עם ARV סטטי).
+        if comps_only:
+            arv_bd = p.get("arv_breakdown") or {}
+            method = (arv_bd.get("arv_method") or "").lower()
+            if arv_bd.get("n_comps", 0) == 0 or "static" in method:
+                continue
 
         filtered.append(p)
         
