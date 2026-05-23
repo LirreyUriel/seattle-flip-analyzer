@@ -281,7 +281,6 @@ def _redfin_url_demo(neighborhood: str) -> str:
     slug = neighborhood.lower().replace(" ", "-")
     return f"https://www.redfin.com/city/16163/WA/Seattle/filter/neighborhood={slug}"
 
-
 def build_property(seed: dict, comps: list[dict] = None) -> dict:
     """Enrich a seed dict with computed fields. Dynamic ARV calculation from comps attached if available."""
     prop_type = seed["property_type"]
@@ -291,14 +290,23 @@ def build_property(seed: dict, comps: list[dict] = None) -> dict:
     year_built = seed["year_built"]
     description = seed["description"]
 
-    # 📊 --- DYNAMIC ARV CALCULATION VIA COMPS ---
+    # 📊 --- DYNAMIC ARV CALCULATION VIA COMPS (FIXED NAMESPACE) ---
     arv_calculated = False
     arv = 0
     arv_meta = {}
 
     if comps:
-        # Match comps filtering by same neighborhood/city location string
-        matched_comps = [c for c in comps if c.get("neighborhood", "").lower().strip() == neighborhood.lower().strip()]
+        # מיפוי חכם: אם השכונה היא חלק מסיאטל, או שיש הכלה בין שמות האזורים
+        n_low = neighborhood.lower().strip()
+        seattle_sub_neighborhoods = ["rainier valley", "beacon hill", "white center", "delridge", "georgetown", "columbia city", "lake city", "northgate", "bitter lake"]
+        
+        matched_comps = []
+        for c in comps:
+            c_nbhd = c.get("neighborhood", "").lower().strip()
+            # התאמה ישירה או בדיקה האם שני האזורים משתייכים לסיאטל
+            if c_nbhd == n_low or (c_nbhd == "seattle" and n_low in seattle_sub_neighborhoods) or (n_low in c_nbhd or c_nbhd in n_low):
+                matched_comps.append(c)
+
         if matched_comps:
             avg_psf = sum(c["psf"] for c in matched_comps) / len(matched_comps)
             base_arv = avg_psf * sqft
@@ -322,6 +330,7 @@ def build_property(seed: dict, comps: list[dict] = None) -> dict:
                 "comps_count": len(matched_comps)
             }
             arv_calculated = True
+            log.info(f"🎯 חושב ARV דינמי עבור {seed['address']} לפי {len(matched_comps)} קומפס. מחיר ממוצע: ${round(avg_psf, 2)}")
 
     if not arv_calculated:
         # Static Fallback mapping if no matching live comps found
