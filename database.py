@@ -349,7 +349,7 @@ def set_status(pid: str, status: str) -> str:
 # Settings (weights + max_price)
 # ---------------------------------------------------------------------------
 
-SETTINGS_DEFAULTS = {**DEFAULT_WEIGHTS, "max_price": 500000}
+SETTINGS_DEFAULTS = {**DEFAULT_WEIGHTS, "max_price": 1500000}
 
 
 def get_settings() -> dict:
