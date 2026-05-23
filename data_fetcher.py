@@ -550,10 +550,10 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     address = str(_rf(h.get("streetLine"), "") or "").strip()
     unit = str(_rf(h.get("unitNumber"), "") or "").strip()
     # Skip parking spaces / storage units
-    if unit and re.match(r'^[A-Z]-?\d+$', unit.lstrip("#").strip()):
-        return None  # e.g. "P-160", "S-22"
-    if unit and unit.lstrip("#").strip().startswith(("P-", "S-", "Storage", "Parking")):
-        return None
+    # if unit and re.match(r'^[A-Z]-?\d+$', unit.lstrip("#").strip()):
+    #    return None  # e.g. "P-160", "S-22"
+    # if unit and unit.lstrip("#").strip().startswith(("P-", "S-", "Storage", "Parking")):
+    #   return None
     if unit:
         address = f"{address} {unit}"
     if not address:
@@ -636,8 +636,8 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     propwire_url = f"https://propwire.com/search?address={propwire_query}"
 
     # SFH only
-    if prop_type != "SFH":
-        return None
+    # if prop_type != "SFH":
+    #   return None
 
     seed = {
         "address": address,
