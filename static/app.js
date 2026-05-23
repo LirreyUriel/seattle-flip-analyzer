@@ -14,6 +14,7 @@ let activeFilters = {
   distress_type: '',
   min_price: 0, max_price: 500000,
   property_type: '',
+  status_filter: '',
   sort_by: 'score',
   sort_dir: 'desc',
   favorites_only: false,
@@ -174,6 +175,7 @@ async function loadProperties() {
     min_price: activeFilters.min_price,
     max_price: activeFilters.max_price,
     property_type: activeFilters.property_type,
+    status_filter: activeFilters.status_filter,
     sort_by: activeFilters.sort_by,
     sort_dir: activeFilters.sort_dir,
     favorites_only: activeFilters.favorites_only,
@@ -208,6 +210,7 @@ function renderGrid(props) {
   grid.querySelectorAll('.property-card').forEach(card => {
     card.addEventListener('click', e => {
       if (e.target.closest('.fav-btn')) return;
+      if (e.target.closest('.status-badge')) return;
       openDetail(card.dataset.id);
     });
   });
@@ -225,6 +228,7 @@ function cardHTML(p) {
   const noteHint = p.note ? `<div class="note-indicator">📝 Note</div>` : '';
   const bom = p.back_on_market
     ? `<span style="color:var(--accent);font-size:.72rem;font-weight:700">BOM</span>` : '';
+  const status = p.status || 'new';
 
   return `
 <div class="property-card" data-id="${esc(p.id)}">
@@ -263,7 +267,12 @@ function cardHTML(p) {
     <div class="fin-value ${roiColor}">${fmtPct(p.roi_pct)}</div>
   </div>
 
-  ${noteHint}
+  <div class="card-footer-row">
+    <span class="status-badge status-${status}" data-status="${status}" data-id="${esc(p.id)}"
+          onclick="event.stopPropagation();cycleStatus('${esc(p.id)}',this)"
+          title="Click to change status">${formatStatus(status)}</span>
+    ${noteHint}
+  </div>
 </div>`;
 }
 
@@ -896,6 +905,7 @@ function bindModal() {
     if (e.key === 'Escape') {
       closeModal();
       closeSettings();
+      closeConfig();
     }
   });
 }
@@ -1065,6 +1075,276 @@ function bindSettings() {
 }
 
 // ---------------------------------------------------------------------------
+// Status Badge
+// ---------------------------------------------------------------------------
+const STATUS_CYCLE = ['new', 'waiting', 'ongoing', 'irrelevant'];
+
+function formatStatus(s) {
+  return { new: 'New', waiting: 'Waiting', ongoing: 'Ongoing', irrelevant: 'Irrelevant' }[s] || 'New';
+}
+
+async function cycleStatus(propertyId, el) {
+  const current = el.dataset.status || 'new';
+  const next = STATUS_CYCLE[(STATUS_CYCLE.indexOf(current) + 1) % STATUS_CYCLE.length];
+  try {
+    const res = await apiFetch(`/api/status/${propertyId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: next }),
+    });
+    if (res.status) {
+      // Update all badges for this property (grid + dashboard may both show it)
+      document.querySelectorAll(`.status-badge[data-id="${propertyId}"]`).forEach(badge => {
+        badge.dataset.status = next;
+        badge.className = `status-badge status-${next}`;
+        badge.textContent = formatStatus(next);
+      });
+    }
+  } catch {
+    showToast('Failed to update status');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Model Config
+// ---------------------------------------------------------------------------
+let _configData = null;
+
+async function openConfig() {
+  document.getElementById('config-backdrop').classList.remove('hidden');
+  document.body.style.overflow = 'hidden';
+  if (!_configData) {
+    try {
+      _configData = await apiFetch('/api/config');
+    } catch {
+      showToast('Failed to load config');
+      closeConfig();
+      return;
+    }
+  }
+  _renderConfigTab('neighborhoods');
+}
+
+function closeConfig() {
+  document.getElementById('config-backdrop').classList.add('hidden');
+  document.body.style.overflow = '';
+}
+
+function _renderConfigTab(name) {
+  document.querySelectorAll('.ctab-panel').forEach(p => p.style.display = 'none');
+  document.querySelectorAll('.config-sub-tab').forEach(b => b.classList.remove('active'));
+  const panel = document.getElementById('ctab-' + name);
+  if (panel) panel.style.display = '';
+  const btn = document.querySelector(`.config-sub-tab[data-ctab="${name}"]`);
+  if (btn) btn.classList.add('active');
+
+  if (name === 'neighborhoods')  renderNeighborhoodTable();
+  if (name === 'renovation')     { renderRenoLevels(); renderAgeMultipliers(); renderPropertyTypeDiscounts(); }
+  if (name === 'thresholds')     renderThresholds();
+  if (name === 'keywords')       renderKeywords();
+}
+
+// ── Neighborhoods ──────────────────────────────────────────────────────────
+function renderNeighborhoodTable() {
+  const tbody = document.getElementById('nbhd-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = (_configData.neighborhoods || []).map((n, i) => `
+    <tr>
+      <td><input type="text" value="${esc(n.name)}" onchange="_configData.neighborhoods[${i}].name=this.value"></td>
+      <td><input type="number" value="${n.arv_psf}" onchange="_configData.neighborhoods[${i}].arv_psf=+this.value"></td>
+      <td><input type="number" value="${n.avg_dom}" onchange="_configData.neighborhoods[${i}].avg_dom=+this.value"></td>
+      <td>
+        <select onchange="_configData.neighborhoods[${i}].tier=this.value">
+          <option value="top"   ${n.tier==='top'   ?'selected':''}>Top (100)</option>
+          <option value="mid"   ${n.tier==='mid'   ?'selected':''}>Mid (65)</option>
+          <option value="other" ${n.tier==='other' ?'selected':''}>Other (35)</option>
+        </select>
+      </td>
+      <td><button class="btn-remove" onclick="removeNbhd(${i})">×</button></td>
+    </tr>`).join('');
+}
+
+function removeNbhd(i) { _configData.neighborhoods.splice(i, 1); renderNeighborhoodTable(); }
+function addNeighborhoodRow() {
+  _configData.neighborhoods.push({ name: '', arv_psf: 510, avg_dom: 22, tier: 'other' });
+  renderNeighborhoodTable();
+  const rows = document.querySelectorAll('#nbhd-tbody tr');
+  rows[rows.length - 1].querySelector('input').focus();
+}
+
+// ── Renovation Levels ──────────────────────────────────────────────────────
+function renderRenoLevels() {
+  const c = document.getElementById('reno-levels-container');
+  if (!c) return;
+  const levels = _configData.reno_config.levels;
+  c.innerHTML = Object.entries(levels).map(([name, v]) => `
+    <div class="reno-block">
+      <h5>${name.toUpperCase()}</h5>
+      <div class="reno-grid">
+        <div class="reno-field">
+          <label>Cost $/sqft</label>
+          <input type="number" value="${v.cost_psf}"
+            onchange="_configData.reno_config.levels['${name}'].cost_psf=+this.value">
+        </div>
+        <div class="reno-field">
+          <label>Score (0–100)</label>
+          <input type="number" min="0" max="100" value="${v.score}"
+            onchange="_configData.reno_config.levels['${name}'].score=+this.value">
+        </div>
+      </div>
+    </div>`).join('');
+}
+
+// ── Age Multipliers ────────────────────────────────────────────────────────
+function renderAgeMultipliers() {
+  const tbody = document.getElementById('age-mult-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = (_configData.reno_config.age_multipliers || []).map((m, i) => `
+    <tr>
+      <td><input type="number" value="${m.min_age}"
+            onchange="_configData.reno_config.age_multipliers[${i}].min_age=+this.value"></td>
+      <td><input type="number" step="0.01" value="${m.multiplier}"
+            onchange="_configData.reno_config.age_multipliers[${i}].multiplier=+this.value"></td>
+      <td><button class="btn-remove" onclick="removeAgeMult(${i})">×</button></td>
+    </tr>`).join('');
+}
+function removeAgeMult(i) { _configData.reno_config.age_multipliers.splice(i, 1); renderAgeMultipliers(); }
+function addAgeMult() {
+  _configData.reno_config.age_multipliers.push({ min_age: 0, multiplier: 1.0 });
+  renderAgeMultipliers();
+}
+
+// ── Property Type Discounts ────────────────────────────────────────────────
+function renderPropertyTypeDiscounts() {
+  const tbody = document.getElementById('pt-discounts-tbody');
+  if (!tbody) return;
+  const discounts = _configData.reno_config.property_type_discounts || {};
+  tbody.innerHTML = Object.entries(discounts).map(([type, mult]) => `
+    <tr>
+      <td><input type="text" value="${esc(type)}"
+            data-orig="${esc(type)}"
+            onchange="renameDiscount(this.dataset.orig,this.value);this.dataset.orig=this.value"></td>
+      <td><input type="number" step="0.01" min="0.1" max="1" value="${mult}"
+            onchange="_configData.reno_config.property_type_discounts['${type}']=+this.value"></td>
+      <td><button class="btn-remove" onclick="removeDiscount('${type}')">×</button></td>
+    </tr>`).join('');
+}
+function removeDiscount(type) {
+  delete _configData.reno_config.property_type_discounts[type];
+  renderPropertyTypeDiscounts();
+}
+function renameDiscount(oldType, newType) {
+  if (oldType === newType) return;
+  const val = _configData.reno_config.property_type_discounts[oldType];
+  delete _configData.reno_config.property_type_discounts[oldType];
+  _configData.reno_config.property_type_discounts[newType] = val;
+}
+function addPropertyTypeDiscount() {
+  _configData.reno_config.property_type_discounts['new_type'] = 1.0;
+  renderPropertyTypeDiscounts();
+}
+
+// ── Score Thresholds ───────────────────────────────────────────────────────
+const THRESHOLD_LABELS = {
+  arv_target_equity_pct:        'ARV target equity % (equity ≥ this % → 100 pts)',
+  roi_target_pct:               'ROI target % (ROI ≥ this % → 100 pts)',
+  distress_kw_points:           'Points per distress keyword',
+  distress_kw_max:              'Max points from keywords',
+  distress_reduction_pts:       'Points per price reduction count',
+  distress_reduction_pct_pts:   'Points per reduction %',
+  distress_reduction_max:       'Max points from reductions',
+  distress_bom_bonus:           'Back-on-market bonus points',
+};
+
+function renderThresholds() {
+  const tbody = document.getElementById('thresholds-tbody');
+  if (!tbody) return;
+  const t = _configData.reno_config.score_thresholds;
+  tbody.innerHTML = Object.entries(THRESHOLD_LABELS).map(([k, label]) => `
+    <tr>
+      <td style="color:var(--text-muted);font-size:.82rem">${label}</td>
+      <td><input type="number" step="0.1" value="${t[k]}"
+            onchange="_configData.reno_config.score_thresholds['${k}']=+this.value"></td>
+    </tr>`).join('');
+}
+
+// ── Keywords ───────────────────────────────────────────────────────────────
+function renderKeywords() {
+  const c = document.getElementById('keywords-container');
+  if (!c) return;
+  c.innerHTML = (_configData.distress_keywords || []).map((kw, i) => `
+    <div class="keyword-chip">
+      ${esc(kw)}
+      <button onclick="removeKeyword(${i})" title="Remove">×</button>
+    </div>`).join('');
+}
+function removeKeyword(i) { _configData.distress_keywords.splice(i, 1); renderKeywords(); }
+function addKeyword() {
+  const inp = document.getElementById('new-keyword-input');
+  const val = inp.value.trim().toLowerCase();
+  if (!val) return;
+  if (!_configData.distress_keywords.includes(val)) {
+    _configData.distress_keywords.push(val);
+    renderKeywords();
+  }
+  inp.value = '';
+}
+
+// ── Save / Reset ───────────────────────────────────────────────────────────
+async function saveConfig() {
+  const btn = document.getElementById('config-save-btn');
+  btn.disabled = true; btn.textContent = '⏳ Saving…';
+  try {
+    const res = await apiFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(_configData),
+    });
+    if (res.status === 'ok') {
+      showToast(`✓ Config saved — ${res.rescored} properties re-scored`);
+      closeConfig();
+      await loadProperties();
+    } else {
+      showToast('Error saving config', 3000);
+    }
+  } catch (err) {
+    showToast(`Save failed: ${err.message}`, 3000);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save & Re-score';
+  }
+}
+
+async function resetConfig() {
+  if (!confirm('Reset all model config to defaults?')) return;
+  const btn = document.getElementById('config-reset-btn');
+  btn.disabled = true;
+  try {
+    const res = await apiFetch('/api/config/reset', { method: 'POST' });
+    _configData = res.config;
+    _renderConfigTab(document.querySelector('.config-sub-tab.active')?.dataset.ctab || 'neighborhoods');
+    showToast('Config reset to defaults');
+    await loadProperties();
+  } catch {
+    showToast('Reset failed');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function bindConfig() {
+  document.getElementById('config-btn').addEventListener('click', openConfig);
+  document.getElementById('config-close-btn').addEventListener('click', closeConfig);
+  document.getElementById('config-save-btn').addEventListener('click', saveConfig);
+  document.getElementById('config-reset-btn').addEventListener('click', resetConfig);
+  document.getElementById('config-backdrop').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeConfig();
+  });
+  document.querySelectorAll('.config-sub-tab').forEach(btn => {
+    btn.addEventListener('click', () => _renderConfigTab(btn.dataset.ctab));
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Dashboard
 // ---------------------------------------------------------------------------
 
@@ -1227,6 +1507,7 @@ function renderCompTable(props) {
                      p.roi_pct < 0   ? 'rgba(239,68,68,.15)'  : 'transparent';
     const profColor = p.profit >= 0 ? 'var(--green)' : 'var(--red)';
     const isActive  = p.id === quickViewActiveId;
+    const status    = p.status || 'new';
 
     return `<tr class="comp-row${isActive ? ' qv-active' : ''}" data-id="${esc(p.id)}">
   <td class="tc">
@@ -1241,6 +1522,9 @@ function renderCompTable(props) {
   <td class="tr"><span class="roi-pill" style="background:${roiBg};color:${roiColor}">${fmtPct(p.roi_pct)}</span></td>
   <td class="tr">${p.dom}d</td>
   <td class="tr">${fmt$(p.price_psf)}</td>
+  <td class="tc"><span class="status-badge status-${status}" data-status="${status}" data-id="${esc(p.id)}"
+        onclick="event.stopPropagation();cycleStatus('${esc(p.id)}',this)"
+        title="Click to change status">${formatStatus(status)}</span></td>
 </tr>`;
   }).join('');
 
@@ -1420,6 +1704,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindRefresh();
   bindModal();
   bindSettings();
+  bindConfig();
   bindDashboard();
   document.getElementById('map-toggle-btn').addEventListener('click', toggleMap);
   await loadStatus();
