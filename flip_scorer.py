@@ -1,149 +1,139 @@
 """
 Flip score algorithm and property valuation helpers.
+All parameters are driven by config dicts (loaded from DB) rather than hardcoded constants.
 """
-import math
 
 DEFAULT_WEIGHTS = {
     # Profitability (40%)
-    "w_arv":             30,  # Price vs ARV equity spread
-    "w_roi":             10,  # Estimated ROI (target >25%)
+    "w_arv":             30,
+    "w_roi":             10,
     # Execution Efficiency (20%)
-    "w_profit_reno":     10,  # Profit-to-Reno ratio (efficiency)
-    "w_reno_level":      10,  # Renovation level (light = best)
+    "w_profit_reno":     10,
+    "w_reno_level":      10,
     # Liquidity & Asset Risk (25%)
-    "w_size":            10,  # Property size / liquidity
-    "w_structural":      10,  # Structural risk (year built)
-    "w_market_velocity":  5,  # Market velocity (DOM vs avg)
+    "w_size":            10,
+    "w_structural":      10,
+    "w_market_velocity":  5,
     # Market Momentum (15%)
-    "w_distress":        10,  # Distress keywords + price reductions
-    "w_neighborhood":     5,  # Neighborhood upside
+    "w_distress":        10,
+    "w_neighborhood":     5,
 }
 
-UPSIDE_NEIGHBORHOODS_TOP = {
-    "rainier valley", "beacon hill", "white center",
-    "delridge", "georgetown",
-}
-UPSIDE_NEIGHBORHOODS_MID = {
-    "columbia city", "northgate", "west seattle",
-}
-# Keep alias for backwards compat
-UPSIDE_NEIGHBORHOODS = UPSIDE_NEIGHBORHOODS_TOP
+# ---------------------------------------------------------------------------
+# Config helpers — build lookup dicts from DB config rows
+# ---------------------------------------------------------------------------
 
-DISTRESS_KEYWORDS = [
-    "as-is", "as is", "fixer", "fixer-upper", "estate sale",
-    "reo", "bank owned", "bank-owned", "short sale", "tlc",
-    "needs work", "needs updating", "investor special", "cash only",
-    "handyman", "distressed", "motivated seller", "price reduced",
-    "probate", "foreclosure", "pre-foreclosure", "back on market",
-]
-
-# Average DOM per neighborhood (days)
-NEIGHBORHOOD_AVG_DOM = {
-    "rainier valley": 28,
-    "beacon hill": 22,
-    "white center": 32,
-    "delridge": 30,
-    "georgetown": 35,
-    "columbia city": 18,
-    "west seattle": 20,
-    "lake city": 25,
-    "northgate": 21,
-    "bitter lake": 27,
-    "crown hill": 24,
-    "maple leaf": 22,
-    "default": 22,
-}
-
-# After-Repair Value per sq ft by neighborhood
-NEIGHBORHOOD_ARV_PSF = {
-    "rainier valley": 490,
-    "beacon hill": 515,
-    "white center": 450,
-    "delridge": 465,
-    "georgetown": 500,
-    "columbia city": 530,
-    "west seattle": 545,
-    "lake city": 495,
-    "northgate": 510,
-    "bitter lake": 475,
-    "crown hill": 520,
-    "maple leaf": 545,
-    "default": 510,
-}
+def _build_nbhd_lookup(neighborhoods: list[dict]) -> dict:
+    """Returns {name_lower: {arv_psf, avg_dom, tier}}"""
+    return {n["name"].lower(): n for n in neighborhoods}
 
 
-def _nbhd_key(neighborhood: str) -> str:
+def _nbhd_key(neighborhood: str, lookup: dict) -> str:
     n = neighborhood.lower().strip()
-    for key in NEIGHBORHOOD_ARV_PSF:
+    for key in lookup:
+        if key == "default":
+            continue
         if key in n or n in key:
             return key
     return "default"
 
 
-def estimate_arv(neighborhood: str, sqft: int, property_type: str) -> int:
-    key = _nbhd_key(neighborhood)
-    psf = NEIGHBORHOOD_ARV_PSF.get(key, NEIGHBORHOOD_ARV_PSF["default"])
-    if property_type.lower() == "condo":
-        psf = int(psf * 0.85)
-    elif property_type.lower() == "townhouse":
-        psf = int(psf * 0.95)
+# ---------------------------------------------------------------------------
+# ARV estimation
+# ---------------------------------------------------------------------------
+
+def estimate_arv(neighborhood: str, sqft: int, property_type: str,
+                 config: dict | None = None) -> int:
+    from database import get_model_config
+    cfg = config or get_model_config()
+    lookup = _build_nbhd_lookup(cfg["neighborhoods"])
+    reno_cfg = cfg["reno_config"]
+
+    key = _nbhd_key(neighborhood, lookup)
+    nbhd = lookup.get(key, lookup.get("default", {"arv_psf": 510}))
+    psf = nbhd["arv_psf"]
+
+    discounts = reno_cfg.get("property_type_discounts", {"condo": 0.85, "townhouse": 0.95})
+    pt = property_type.lower()
+    if pt in discounts:
+        psf = int(psf * discounts[pt])
+
     return round(psf * sqft / 1000) * 1000
 
 
-def estimate_renovation(description: str, sqft: int, year_built: int) -> tuple[int, dict, str]:
+# ---------------------------------------------------------------------------
+# Renovation estimation
+# ---------------------------------------------------------------------------
+
+def estimate_renovation(description: str, sqft: int, year_built: int,
+                        config: dict | None = None) -> tuple[int, dict, str]:
+    from database import get_model_config
+    cfg = config or get_model_config()
+    reno_cfg = cfg["reno_config"]
+    levels = reno_cfg["levels"]
+    age_mults = reno_cfg["age_multipliers"]
+    heavy_kw = reno_cfg["heavy_keywords"]
+    medium_kw = reno_cfg["medium_keywords"]
+    breakdown_pct = reno_cfg["breakdown_pct"]
+
     desc = description.lower()
-    heavy = ["gut", "uninhabitable", "major renovation", "tear down", "condemned", "foundation issue"]
-    medium = ["fixer", "fixer-upper", "tlc", "as-is", "as is", "needs work",
-              "needs updating", "investor special", "cash only", "handyman",
-              "estate sale", "full renovation", "full update"]
+    heavy_year_cutoff = 1945  # properties older than this default to heavy
 
-    if any(k in desc for k in heavy) or year_built < 1945:
-        level, cost_psf = "heavy", 85
-    elif any(k in desc for k in medium):
-        level, cost_psf = "medium", 52
+    if any(k in desc for k in heavy_kw) or year_built < heavy_year_cutoff:
+        level = "heavy"
+    elif any(k in desc for k in medium_kw):
+        level = "medium"
     else:
-        level, cost_psf = "light", 28
+        level = "light"
 
+    cost_psf = levels[level]["cost_psf"]
     base = sqft * cost_psf
-    age = 2025 - year_built
-    if age > 65:
-        base = int(base * 1.18)
-    elif age > 45:
-        base = int(base * 1.08)
 
-    breakdown = {
-        "Kitchen":                    round(base * 0.20),
-        "Bathrooms":                  round(base * 0.15),
-        "Flooring":                   round(base * 0.12),
-        "Roof & Exterior":            round(base * 0.15),
-        "HVAC / Plumbing / Electric": round(base * 0.18),
-        "Windows & Doors":            round(base * 0.08),
-        "Landscaping":                round(base * 0.05),
-        "Permits & Overhead":         round(base * 0.07),
-    }
+    age = 2025 - year_built
+    multiplier = 1.0
+    for tier in sorted(age_mults, key=lambda x: x["min_age"], reverse=True):
+        if age >= tier["min_age"]:
+            multiplier = tier["multiplier"]
+            break
+    base = int(base * multiplier)
+
+    breakdown = {k: round(base * v) for k, v in breakdown_pct.items()}
     total = round(sum(breakdown.values()) / 5000) * 5000
     return total, breakdown, level
 
 
-def count_distress_keywords(description: str) -> tuple[int, list[str]]:
+# ---------------------------------------------------------------------------
+# Distress keywords
+# ---------------------------------------------------------------------------
+
+def count_distress_keywords(description: str,
+                             config: dict | None = None) -> tuple[int, list[str]]:
+    from database import get_model_config
+    cfg = config or get_model_config()
+    keywords = cfg["distress_keywords"]
     desc = description.lower()
-    found = [kw for kw in DISTRESS_KEYWORDS if kw in desc]
+    found = [kw for kw in keywords if kw in desc]
     return len(found), found
 
 
-def calculate_flip_score(prop: dict, weights: dict | None = None) -> int:
-    """Calculate 0–100 flip score.
+# ---------------------------------------------------------------------------
+# Main scoring function
+# ---------------------------------------------------------------------------
 
-    Model (4 categories, 9 factors):
-      Profitability        40% — Price vs ARV (30), ROI (10)
-      Execution Efficiency 20% — Profit/Reno ratio (10), Reno level (10)
-      Liquidity & Risk     25% — Size (10), Structural (10), Market velocity (5)
-      Market Momentum      15% — Distress & reductions (10), Neighborhood (5)
+def calculate_flip_score(prop: dict, weights: dict | None = None,
+                         config: dict | None = None) -> int:
+    """Calculate 0–100 flip score using config-driven parameters.
 
-    Weights are pulled from DEFAULT_WEIGHTS, overridden by `weights` param,
-    then normalized to sum to 100. Unknown keys in `weights` are ignored.
+    All scoring thresholds, tiers, and lookup tables are read from `config`
+    (loaded from DB). Falls back to DB defaults if config is None.
     """
-    # Only use recognised keys; fill missing ones from defaults
+    from database import get_model_config
+    cfg = config or get_model_config()
+    reno_cfg = cfg["reno_config"]
+    thresholds = reno_cfg["score_thresholds"]
+    lookup = _build_nbhd_lookup(cfg["neighborhoods"])
+
+    # Resolve weights
     w = {k: float((weights or {}).get(k, DEFAULT_WEIGHTS[k])) for k in DEFAULT_WEIGHTS}
     total = sum(w.values()) or 100
     w = {k: v / total for k, v in w.items()}
@@ -164,100 +154,107 @@ def calculate_flip_score(prop: dict, weights: dict | None = None) -> int:
 
     score = 0.0
 
-    # ── 1. Price vs ARV (30%) ────────────────────────────────────────────────
-    # Target: >30% equity spread = 100 pts.  No equity = 0 pts.
+    # ── 1. Price vs ARV ──────────────────────────────────────────────────────
+    arv_target = thresholds["arv_target_equity_pct"]
     if arv > 0 and price > 0 and arv > price:
         equity_pct = (arv - price) / arv * 100
-        arv_score = min(100.0, equity_pct / 30 * 100)
+        arv_score = min(100.0, equity_pct / arv_target * 100)
     else:
         arv_score = 0.0
     score += arv_score * w["w_arv"]
 
-    # ── 2. Estimated ROI (10%) ───────────────────────────────────────────────
-    # Target: >25% ROI = 100 pts.  Negative ROI = 0 pts.
-    roi_score = min(100.0, roi_pct / 25 * 100) if roi_pct > 0 else 0.0
+    # ── 2. ROI ───────────────────────────────────────────────────────────────
+    roi_target = thresholds["roi_target_pct"]
+    roi_score = min(100.0, roi_pct / roi_target * 100) if roi_pct > 0 else 0.0
     score += roi_score * w["w_roi"]
 
-    # ── 3. Profit-to-Reno Ratio (10%) ───────────────────────────────────────
-    # Efficiency: Est. Profit / Reno Cost.  ≥2.0x = 100 pts.
+    # ── 3. Profit-to-Reno Ratio ──────────────────────────────────────────────
     if reno_cost > 0:
         profit = arv - price - reno_cost
         ratio = profit / reno_cost
-        if   ratio >= 2.0: pr_score = 100.0
-        elif ratio >= 1.0: pr_score = 75.0
-        elif ratio >= 0.5: pr_score = 50.0
-        elif ratio >= 0:   pr_score = 25.0
-        else:              pr_score = 0.0
+        pr_score = 0.0
+        for tier in sorted(thresholds["profit_reno_ratio_tiers"],
+                           key=lambda x: x["min"], reverse=True):
+            if ratio >= tier["min"]:
+                pr_score = float(tier["score"])
+                break
     else:
         pr_score = 0.0
     score += pr_score * w["w_profit_reno"]
 
-    # ── 4. Renovation Level (10%) ────────────────────────────────────────────
-    # Light = max score; heavy/structural = large penalty.
-    reno_level_scores = {"light": 100, "medium": 50, "heavy": 10}
-    reno_score = float(reno_level_scores.get((reno_level or "medium").lower(), 50))
+    # ── 4. Renovation Level ──────────────────────────────────────────────────
+    levels = reno_cfg["levels"]
+    reno_score = float(levels.get((reno_level or "medium").lower(), {}).get("score", 50))
     score += reno_score * w["w_reno_level"]
 
-    # ── 5. Property Size / Liquidity (10%) ──────────────────────────────────
-    # Sweet spot 800–2,500 sqft. <500 or >4,000 = narrow buyer pool = penalty.
-    if   sqft >= 800  and sqft <= 2500: size_score = 100.0
-    elif sqft >= 600  and sqft <  800:  size_score = 75.0
-    elif sqft >  2500 and sqft <= 3500: size_score = 75.0
-    elif sqft >= 500  and sqft <  600:  size_score = 45.0
-    elif sqft >  3500 and sqft <= 4500: size_score = 45.0
-    elif sqft > 0:                      size_score = 10.0   # <500 or >4500
-    else:                               size_score = 50.0   # unknown
+    # ── 5. Property Size / Liquidity ─────────────────────────────────────────
+    size_score = 50.0  # unknown
+    if sqft > 0:
+        size_score = 10.0
+        for tier in thresholds["size_tiers"]:
+            if tier["min"] <= sqft <= tier["max"]:
+                size_score = float(tier["score"])
+                break
     score += size_score * w["w_size"]
 
-    # ── 6. Structural Risk (10%) ─────────────────────────────────────────────
-    # Post-2000 = low risk = 100 pts. Pre-1960 = high risk = 8 pts.
-    if   year_built >= 2000: struct_score = 100.0
-    elif year_built >= 1990: struct_score = 82.0
-    elif year_built >= 1980: struct_score = 60.0
-    elif year_built >= 1970: struct_score = 38.0
-    elif year_built >= 1960: struct_score = 20.0
-    else:                    struct_score = 8.0
+    # ── 6. Structural Risk ───────────────────────────────────────────────────
+    struct_score = 8.0
+    for tier in sorted(thresholds["struct_year_tiers"],
+                       key=lambda x: x["min_year"], reverse=True):
+        if year_built >= tier["min_year"]:
+            struct_score = float(tier["score"])
+            break
     score += struct_score * w["w_structural"]
 
-    # ── 7. Market Velocity (5%) ──────────────────────────────────────────────
-    # HIGH DOM vs avg = liquidity risk = PENALTY (opposite of old model).
-    key = _nbhd_key(neighborhood)
-    avg_dom = NEIGHBORHOOD_AVG_DOM.get(key, NEIGHBORHOOD_AVG_DOM["default"])
+    # ── 7. Market Velocity ───────────────────────────────────────────────────
+    key = _nbhd_key(neighborhood, lookup)
+    nbhd_data = lookup.get(key, lookup.get("default", {"avg_dom": 22}))
+    avg_dom = nbhd_data.get("avg_dom", 22)
+
     if avg_dom > 0 and dom > 0:
         ratio = dom / avg_dom
-        if   ratio <= 0.50: vel_score = 100.0
-        elif ratio <= 0.75: vel_score = 85.0
-        elif ratio <= 1.00: vel_score = 70.0
-        elif ratio <= 1.50: vel_score = 50.0
-        elif ratio <= 2.00: vel_score = 30.0
-        elif ratio <= 3.00: vel_score = 15.0
-        else:               vel_score = 5.0
+        vel_score = 5.0
+        for tier in thresholds["dom_ratio_tiers"]:
+            if ratio <= tier["max_ratio"]:
+                vel_score = float(tier["score"])
+                break
     else:
         vel_score = 50.0
     score += vel_score * w["w_market_velocity"]
 
-    # ── 8. Distress & Reductions (10%) ───────────────────────────────────────
-    # Keywords (max 50) + price cuts (max 30) + back-on-market bonus (20).
-    kw_count, _ = count_distress_keywords(description)
-    kw_sub      = min(50.0, kw_count * 15)
-    red_sub     = min(30.0, price_reductions * 8 + price_red_pct * 1.2)
-    bom_sub     = 20.0 if back_on_market else 0.0
+    # ── 8. Distress & Reductions ─────────────────────────────────────────────
+    kw_count, _ = count_distress_keywords(description, cfg)
+    kw_pts   = thresholds["distress_kw_points"]
+    kw_max   = thresholds["distress_kw_max"]
+    red_pts  = thresholds["distress_reduction_pts"]
+    red_pct_pts = thresholds["distress_reduction_pct_pts"]
+    red_max  = thresholds["distress_reduction_max"]
+    bom_bonus = thresholds["distress_bom_bonus"]
+
+    kw_sub  = min(float(kw_max),  kw_count * kw_pts)
+    red_sub = min(float(red_max), price_reductions * red_pts + price_red_pct * red_pct_pts)
+    bom_sub = float(bom_bonus) if back_on_market else 0.0
     distress_score = min(100.0, kw_sub + red_sub + bom_sub)
     score += distress_score * w["w_distress"]
 
-    # ── 9. Neighborhood Upside (5%) ──────────────────────────────────────────
-    # Top-tier appreciation areas = 100; moderate = 65; others = 35.
+    # ── 9. Neighborhood Upside ───────────────────────────────────────────────
     nbhd_lower = neighborhood.lower()
-    if any(n in nbhd_lower for n in UPSIDE_NEIGHBORHOODS_TOP):
-        nbhd_score = 100.0
-    elif any(n in nbhd_lower for n in UPSIDE_NEIGHBORHOODS_MID):
-        nbhd_score = 65.0
-    else:
-        nbhd_score = 35.0
+    tier_scores = {"top": 100.0, "mid": 65.0, "other": 35.0}
+    nbhd_score = 35.0
+    for name, data in lookup.items():
+        if name == "default":
+            continue
+        if name in nbhd_lower or nbhd_lower in name:
+            nbhd_score = tier_scores.get(data.get("tier", "other"), 35.0)
+            break
     score += nbhd_score * w["w_neighborhood"]
 
     return round(min(100, max(0, score)))
 
+
+# ---------------------------------------------------------------------------
+# ROI, color, ARV breakdown
+# ---------------------------------------------------------------------------
 
 def calculate_roi(price: int, arv: int, renovation_cost: int) -> float:
     total_in = price + renovation_cost
@@ -275,18 +272,23 @@ def score_color(score: int) -> str:
     return "red"
 
 
-def get_arv_breakdown(arv: int, neighborhood: str, sqft: int, property_type: str) -> dict:
-    key = _nbhd_key(neighborhood)
-    psf = NEIGHBORHOOD_ARV_PSF.get(key, NEIGHBORHOOD_ARV_PSF["default"])
-    if property_type.lower() == "condo":
-        psf = int(psf * 0.85)
-    elif property_type.lower() == "townhouse":
-        psf = int(psf * 0.95)
+def get_arv_breakdown(arv: int, neighborhood: str, sqft: int, property_type: str,
+                      config: dict | None = None) -> dict:
+    from database import get_model_config
+    cfg = config or get_model_config()
+    lookup = _build_nbhd_lookup(cfg["neighborhoods"])
+    reno_cfg = cfg["reno_config"]
 
-    adj_note = {
-        "condo": "15% discount applied for condo",
-        "townhouse": "5% discount applied for townhouse",
-    }.get(property_type.lower(), "No adjustment")
+    key = _nbhd_key(neighborhood, lookup)
+    nbhd = lookup.get(key, lookup.get("default", {"arv_psf": 510}))
+    psf = nbhd["arv_psf"]
+
+    discounts = reno_cfg.get("property_type_discounts", {"condo": 0.85, "townhouse": 0.95})
+    pt = property_type.lower()
+    adj_note = "No adjustment"
+    if pt in discounts:
+        psf = int(psf * discounts[pt])
+        adj_note = f"{int((1 - discounts[pt]) * 100)}% discount applied for {pt}"
 
     return {
         "estimated_arv": arv,
@@ -295,3 +297,31 @@ def get_arv_breakdown(arv: int, neighborhood: str, sqft: int, property_type: str
         "sqft": sqft,
         "property_type_adjustment": adj_note,
     }
+
+
+# ---------------------------------------------------------------------------
+# Legacy module-level constants (for data_fetcher.py backward compat)
+# ---------------------------------------------------------------------------
+
+def _get_neighborhood_avg_dom_map() -> dict:
+    """Returns avg_dom lookup dict — used by data_fetcher at import time."""
+    try:
+        from database import get_model_config
+        cfg = get_model_config()
+        result = {}
+        for n in cfg["neighborhoods"]:
+            result[n["name"].lower()] = n["avg_dom"]
+        return result
+    except Exception:
+        # Fallback if DB not yet initialized
+        return {
+            "rainier valley": 28, "beacon hill": 22, "white center": 32,
+            "delridge": 30, "georgetown": 35, "columbia city": 18,
+            "west seattle": 20, "lake city": 25, "northgate": 21,
+            "bitter lake": 27, "crown hill": 24, "maple leaf": 22,
+            "default": 22,
+        }
+
+
+# data_fetcher imports this at module level — keep it as a live dict proxy
+NEIGHBORHOOD_AVG_DOM = _get_neighborhood_avg_dom_map()
