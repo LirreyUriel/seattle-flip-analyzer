@@ -281,6 +281,7 @@ def _redfin_url_demo(neighborhood: str) -> str:
     slug = neighborhood.lower().replace(" ", "-")
     return f"https://www.redfin.com/city/16163/WA/Seattle/filter/neighborhood={slug}"
 
+
 def build_property(seed: dict, comps: list[dict] = None) -> dict:
     """Enrich a seed dict with computed fields. Dynamic ARV calculation from comps attached if available."""
     prop_type = seed["property_type"]
@@ -303,7 +304,6 @@ def build_property(seed: dict, comps: list[dict] = None) -> dict:
         matched_comps = []
         for c in comps:
             c_nbhd = c.get("neighborhood", "").lower().strip()
-            # התאמה ישירה או בדיקה האם שני האזורים משתייכים לסיאטל
             if c_nbhd == n_low or (c_nbhd == "seattle" and n_low in seattle_sub_neighborhoods) or (n_low in c_nbhd or c_nbhd in n_low):
                 matched_comps.append(c)
 
@@ -311,7 +311,6 @@ def build_property(seed: dict, comps: list[dict] = None) -> dict:
             avg_psf = sum(c["psf"] for c in matched_comps) / len(matched_comps)
             base_arv = avg_psf * sqft
             
-            # Apply property type modifiers dynamically
             if prop_type == "Townhouse":
                 base_arv *= 0.95
                 adjustment_label = "-5% Townhouse Adjustment"
@@ -333,7 +332,6 @@ def build_property(seed: dict, comps: list[dict] = None) -> dict:
             log.info(f"🎯 חושב ARV דינמי עבור {seed['address']} לפי {len(matched_comps)} קומפס. מחיר ממוצע: ${round(avg_psf, 2)}")
 
     if not arv_calculated:
-        # Static Fallback mapping if no matching live comps found
         arv, arv_meta = estimate_arv(neighborhood, sqft, prop_type)
         arv_meta["calculated_from_comps"] = False
 
@@ -385,7 +383,6 @@ def build_property(seed: dict, comps: list[dict] = None) -> dict:
     prop["flip_score"] = calculate_flip_score(prop)
     prop["score_color"] = score_color(prop["flip_score"])
     
-    # Structure breakdown injection
     if arv_meta.get("calculated_from_comps"):
         prop["arv_breakdown"] = {
             "price_per_sqft": arv_meta["price_per_sqft"],
@@ -560,7 +557,7 @@ def _normalize_king_county(r: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Redfin internal API (no key required — real live listings)
+# Redfin internal API
 # ---------------------------------------------------------------------------
 REDFIN_GIS_URL = "https://www.redfin.com/stingray/api/gis"
 REDFIN_HEADERS = {
@@ -587,7 +584,6 @@ def _rf(obj, fallback=None):
 
 def _normalize_redfin(h: dict, max_price: int = 500000, comps: list[dict] = None) -> dict | None:
     """Convert a Redfin GIS home object to our internal property format. Integrates real pipeline comps."""
-    # --- Address Extraction First ---
     address = str(_rf(h.get("streetLine"), "") or "").strip()
     unit = str(_rf(h.get("unitNumber"), "") or "").strip()
     if unit:
@@ -596,7 +592,6 @@ def _normalize_redfin(h: dict, max_price: int = 500000, comps: list[dict] = None
         log.info("❌ Filtered out property: Empty address field")
         return None
 
-    # --- Price Filter ---
     price = int(_rf(h.get("price"), 0) or 0)
     if price < 120000:
         log.info(f"❌ Filtered out '{address}': Price too low (${price})")
@@ -605,24 +600,17 @@ def _normalize_redfin(h: dict, max_price: int = 500000, comps: list[dict] = None
         log.info(f"❌ Filtered out '{address}': Price (${price}) exceeds max_price limit (${max_price})")
         return None
 
-    # --- Neighborhood ---
     neighborhood = str(_rf(h.get("location"), "") or "").strip() or "Seattle"
-
-    # --- Property Type ---
     ui_type = int(h.get("uiPropertyType", 1) or 1)
     prop_type = _UI_PROP_TYPES.get(ui_type, "SFH")
 
-    # --- Size Metrics ---
     sqft = max(400, min(int(_rf(h.get("sqFt"), 1200) or 1200), 15000))
     lot_sqft = int(_rf(h.get("lotSize"), 0) or 0)
     beds = int(h.get("beds") or 3)
     baths = float(h.get("baths") or 1.0)
     year_built = int(_rf(h.get("yearBuilt"), 1960) or 1960)
-
-    # --- DOM ---
     dom = int(_rf(h.get("dom"), 0) or 0)
 
-    # --- Sashes / Redfin Overlays ---
     sashes = h.get("sashes") or []
     sash_names = " ".join(
         str(s.get("sashTypeName", "") if isinstance(s, dict) else s)
@@ -630,11 +618,8 @@ def _normalize_redfin(h: dict, max_price: int = 500000, comps: list[dict] = None
     ).lower()
     price_reductions = 1 if "price" in sash_names and "reduc" in sash_names else 0
     price_drop_pct = 0.0
-
-    # --- Back on Market ---
     back_on_market = "back on market" in sash_names or bool(h.get("isBackOnMarket"))
 
-    # --- Listing Description / Remarks ---
     remarks = str(h.get("listingRemarks") or "").strip()
     tags_list = h.get("listingTags") or []
     if tags_list:
@@ -642,7 +627,6 @@ def _normalize_redfin(h: dict, max_price: int = 500000, comps: list[dict] = None
         if tag_str and tag_str not in remarks.lower():
             remarks = f"{remarks} [{tag_str}]".strip()
 
-    # --- Distress Detection ---
     r = remarks.lower()
     tags = " ".join(str(t) for t in (h.get("listingTags") or [])).lower()
     listing_type = int(h.get("listingType", 0) or 0)
@@ -662,7 +646,6 @@ def _normalize_redfin(h: dict, max_price: int = 500000, comps: list[dict] = None
     else:
         distress_type = "Standard"
 
-    # --- URLs ---
     url_path = h.get("url", "")
     redfin_url = f"https://www.redfin.com{url_path}" if url_path else "https://www.redfin.com/city/16163/WA/Seattle"
     from urllib.parse import quote_plus
@@ -688,8 +671,8 @@ def _normalize_redfin(h: dict, max_price: int = 500000, comps: list[dict] = None
         "description": remarks,
     }
 
-    # --- Safe Build & Validation Catch Block ---
     try:
+        # ✓ מציבים מפורשות את הקומפס המוזרקים
         prop = build_property(seed, comps=comps)
         prop["source"] = "redfin"
         prop["redfin_url"] = redfin_url
@@ -778,6 +761,7 @@ async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int,
             log.info(f"Redfin [{region['name']}] p{params['page_number']}: {len(homes)} raw homes")
             for h in homes:
                 try:
+                    # ✓ מזריקים את רשימת הקומפס האזורית
                     prop = _normalize_redfin(h, max_price=max_price, comps=comps)
                     if prop:
                         region_results.append(prop)
@@ -794,6 +778,7 @@ async def fetch_redfin_listings(max_price: int = 1500000, comps: list[dict] = No
     """Fetch SFH listings from Redfin across regions and ingest live historical comps tracking."""
     all_results = []
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        # ✓ מוסרים את הקומפס כארגומנט למשיכת המחוזות
         tasks = [_fetch_region(client, r, max_price, comps=comps) for r in REGIONS]
         region_batches = await asyncio.gather(*tasks, return_exceptions=True)
         for batch in region_batches:
@@ -855,14 +840,11 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
                 for h in homes:
                     try:
                         price = int(_rf(h.get("price"), 0) or 0)
-                        
-                        # רדפין לפעמים משנה את שם השדה של השטח בתוך ה-payload של ה-comps ל-sqFt (עם F גדולה) או sqft
                         sqft  = int(_rf(h.get("sqft"), 0) or _rf(h.get("sqFt"), 0) or 0)
                         
                         if price < 100000 or sqft < 400:
                             continue
 
-                        # 🛠️ תיקון חסימת התיאור: אם השדה חסר, לא נפסול את הבית אלא נמשיך הלאה
                         raw_remarks = _rf(h.get("remarksAccessInfo"), "") or _rf(h.get("listingRemarks"), "") or ""
                         remarks = str(raw_remarks).lower()
                         
@@ -870,7 +852,6 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
                                                        "short sale", "estate sale", "foreclosure"]):
                             continue
 
-                        # Use location field as neighborhood, fall back to city name
                         location = str(_rf(h.get("location"), "") or "").strip()
                         nbhd = location if location else region["name"]
 
@@ -925,7 +906,8 @@ async def fetch_all_properties(api_key: str = "", max_price: int = 500000) -> li
                     merged.append(p)
             merged.sort(key=lambda x: x["flip_score"], reverse=True)
             if merged:
-                return merged[:30]
+                # ✓ הגדלת מכסת החיתוך ל-200 גם ב-Zillow pipeline
+                return merged[:200]
         except Exception as e:
             log.warning(f"Zillow fetch failed: {e}")
 
@@ -935,12 +917,17 @@ async def fetch_all_properties(api_key: str = "", max_price: int = 500000) -> li
         log.info("⏳ Pre-fetching Redfin historical closed market comps...")
         live_comps = await fetch_redfin_comps(neighborhood_names)
         
+        # ✓ הזרקה ישירה של ה-Comps למערך הליסטינגס הראשי
         props = await fetch_redfin_listings(max_price=max_price, comps=live_comps)
-        return props[:30]
+        
+        # ✓ שינוי מכסת החיתוך ל-200 כדי שיאגר מספיק מידע במאגר הפנימי
+        return props[:200]
     except Exception as e:
         log.warning(f"Redfin fetch failed: {e} — falling back to demo data")
 
     properties = [build_property(s) for s in MOCK_SEEDS]
     properties = [p for p in properties if p.get("price", 0) <= max_price]
     properties.sort(key=lambda x: x["flip_score"], reverse=True)
-    return properties[:30]
+    
+    # ✓ הגדלת מכסת החיתוך ל-200 גם במצב ה-Demo כגיבוי
+    return properties[:200]
