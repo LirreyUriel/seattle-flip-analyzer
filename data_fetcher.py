@@ -138,7 +138,7 @@ MOCK_SEEDS = [
      "description": "Back on market — first buyer got cold feet at inspection. Good value SFH in Delridge. Needs cosmetic work — paint, carpet, kitchen refresh. As-is sale. Seller motivated. Large lot."},
 
     {"address": "4823 SW Alaska St", "neighborhood": "Delridge",
-     "price": 398000, "beds": 3, "baths": 1.5, "sqft": 1290, "6400": 4600,
+     "price": 398000, "beds": 3, "baths": 1.5, "sqft": 1290, "lot_sqft": 4600,
      "year_built": 1962, "property_type": "SFH", "distress_type": "Pre-Foreclosure",
      "dom": 47, "price_reductions": 1, "price_reduction_pct": 5.0, "back_on_market": False,
      "description": "Pre-foreclosure listing. Owner behind on payments, motivated to sell quickly. Property needs work but has good potential. Kitchen and baths need update. As-is sale."},
@@ -220,7 +220,6 @@ def _make_id(address: str) -> str:
     return hashlib.md5(address.encode()).hexdigest()[:12]
 
 
-# Approximate neighborhood center coordinates (lat, lng)
 NEIGHBORHOOD_COORDS = {
     "rainier valley": (47.5502, -122.2785),
     "beacon hill":    (47.5666, -122.3073),
@@ -283,8 +282,8 @@ def _redfin_url_demo(neighborhood: str) -> str:
     return f"https://www.redfin.com/city/16163/WA/Seattle/filter/neighborhood={slug}"
 
 
-def build_property(seed: dict) -> dict:
-    """Enrich a seed dict with computed fields."""
+def build_property(seed: dict, comps: list[dict] = None) -> dict:
+    """Enrich a seed dict with computed fields. Dynamic ARV calculation from comps attached if available."""
     prop_type = seed["property_type"]
     neighborhood = seed["neighborhood"]
     price = seed["price"]
@@ -292,7 +291,43 @@ def build_property(seed: dict) -> dict:
     year_built = seed["year_built"]
     description = seed["description"]
 
-    arv, arv_meta = estimate_arv(neighborhood, sqft, prop_type)
+    # 📊 --- DYNAMIC ARV CALCULATION VIA COMPS ---
+    arv_calculated = False
+    arv = 0
+    arv_meta = {}
+
+    if comps:
+        # Match comps filtering by same neighborhood/city location string
+        matched_comps = [c for c in comps if c.get("neighborhood", "").lower().strip() == neighborhood.lower().strip()]
+        if matched_comps:
+            avg_psf = sum(c["psf"] for c in matched_comps) / len(matched_comps)
+            base_arv = avg_psf * sqft
+            
+            # Apply property type modifiers dynamically
+            if prop_type == "Townhouse":
+                base_arv *= 0.95
+                adjustment_label = "-5% Townhouse Adjustment"
+            elif prop_type == "Condo":
+                base_arv *= 0.85
+                adjustment_label = "-15% Condo Adjustment"
+            else:
+                adjustment_label = "No adjustment (SFH)"
+                
+            arv = int(base_arv)
+            arv_meta = {
+                "price_per_sqft": round(avg_psf, 2),
+                "sqft": sqft,
+                "property_type_adjustment": adjustment_label,
+                "calculated_from_comps": True,
+                "comps_count": len(matched_comps)
+            }
+            arv_calculated = True
+
+    if not arv_calculated:
+        # Static Fallback mapping if no matching live comps found
+        arv, arv_meta = estimate_arv(neighborhood, sqft, prop_type)
+        arv_meta["calculated_from_comps"] = False
+
     reno_cost, reno_breakdown, reno_level = estimate_renovation(description, sqft, year_built)
     roi = calculate_roi(price, arv, reno_cost)
     _, found_keywords = count_distress_keywords(description)
@@ -340,8 +375,17 @@ def build_property(seed: dict) -> dict:
 
     prop["flip_score"] = calculate_flip_score(prop)
     prop["score_color"] = score_color(prop["flip_score"])
-    prop["arv_breakdown"] = get_arv_breakdown(arv, neighborhood, sqft, prop_type,
-                                               arv_meta=arv_meta)
+    
+    # Structure breakdown injection
+    if arv_meta.get("calculated_from_comps"):
+        prop["arv_breakdown"] = {
+            "price_per_sqft": arv_meta["price_per_sqft"],
+            "sqft": arv_meta["sqft"],
+            "property_type_adjustment": arv_meta["property_type_adjustment"]
+        }
+    else:
+        prop["arv_breakdown"] = get_arv_breakdown(arv, neighborhood, sqft, prop_type, arv_meta=arv_meta)
+        
     prop["hoa_monthly"] = 0
     prop["tax_annual"] = round(price * 0.011 / 100) * 100
     prop["buyers_agent_pct"] = 2.5
@@ -532,9 +576,9 @@ def _rf(obj, fallback=None):
     return obj
 
 
-def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
-    """Convert a Redfin GIS home object to our internal property format."""
-    # --- Address Extraction First for Accurate Log Reporting ---
+def _normalize_redfin(h: dict, max_price: int = 500000, comps: list[dict] = None) -> dict | None:
+    """Convert a Redfin GIS home object to our internal property format. Integrates real pipeline comps."""
+    # --- Address Extraction First ---
     address = str(_rf(h.get("streetLine"), "") or "").strip()
     unit = str(_rf(h.get("unitNumber"), "") or "").strip()
     if unit:
@@ -637,7 +681,7 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
 
     # --- Safe Build & Validation Catch Block ---
     try:
-        prop = build_property(seed)
+        prop = build_property(seed, comps=comps)
         prop["source"] = "redfin"
         prop["redfin_url"] = redfin_url
         prop["zillow_url"] = _zillow_url_demo(neighborhood)
@@ -695,7 +739,7 @@ REGIONS = [
 ]
 
 
-async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int) -> list[dict]:
+async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int, comps: list[dict] = None) -> list[dict]:
     """Fetch SFH listings for a single Redfin region."""
     region_results = []
     base = {
@@ -725,7 +769,7 @@ async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int)
             log.info(f"Redfin [{region['name']}] p{params['page_number']}: {len(homes)} raw homes")
             for h in homes:
                 try:
-                    prop = _normalize_redfin(h, max_price=max_price)
+                    prop = _normalize_redfin(h, max_price=max_price, comps=comps)
                     if prop:
                         region_results.append(prop)
                 except Exception as e:
@@ -737,11 +781,11 @@ async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int)
     return region_results
 
 
-async def fetch_redfin_listings(max_price: int = 1500000) -> list[dict]:
-    """Fetch SFH listings from Redfin across King, Pierce, and Snohomish counties."""
+async def fetch_redfin_listings(max_price: int = 1500000, comps: list[dict] = None) -> list[dict]:
+    """Fetch SFH listings from Redfin across regions and ingest live historical comps tracking."""
     all_results = []
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        tasks = [_fetch_region(client, r, max_price) for r in REGIONS]
+        tasks = [_fetch_region(client, r, max_price, comps=comps) for r in REGIONS]
         region_batches = await asyncio.gather(*tasks, return_exceptions=True)
         for batch in region_batches:
             if isinstance(batch, list):
@@ -869,8 +913,13 @@ async def fetch_all_properties(api_key: str = "", max_price: int = 500000) -> li
         except Exception as e:
             log.warning(f"Zillow fetch failed: {e}")
 
+    # 📊 Live Redfin Pipeline Tracking With Integrated Real Comps Mapping
     try:
-        props = await fetch_redfin_listings(max_price=max_price)
+        neighborhood_names = [r["name"] for r in REGIONS]
+        log.info("⏳ Pre-fetching Redfin historical closed market comps...")
+        live_comps = await fetch_redfin_comps(neighborhood_names)
+        
+        props = await fetch_redfin_listings(max_price=max_price, comps=live_comps)
         return props[:30]
     except Exception as e:
         log.warning(f"Redfin fetch failed: {e} — falling back to demo data")
