@@ -17,7 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
 import database
-from data_fetcher import fetch_all_properties
+from data_fetcher import fetch_all_properties, fetch_redfin_comps
 from flip_scorer import calculate_flip_score, score_color, DEFAULT_WEIGHTS
 
 load_dotenv()
@@ -30,7 +30,28 @@ REFRESH_HOURS = int(os.getenv("REFRESH_HOURS", "3"))
 MAX_PROPERTIES = int(os.getenv("MAX_PROPERTIES", "30"))
 
 _refresh_lock = asyncio.Lock()
+_comps_lock   = asyncio.Lock()
 _data_source = "demo"
+
+
+async def refresh_comps():
+    """Fetch sold comps from Redfin once daily — used for ARV calculation."""
+    async with _comps_lock:
+        log.info("Refreshing comps data...")
+        try:
+            cfg = database.get_model_config()
+            neighborhoods = [
+                n["name"] for n in cfg["neighborhoods"]
+                if n["name"].lower() != "default"
+            ]
+            comps = await fetch_redfin_comps(neighborhoods)
+            if comps:
+                database.upsert_comps(comps)
+                log.info(f"Comps updated: {len(comps)} records")
+            else:
+                log.warning("No comps returned — keeping existing data")
+        except Exception as e:
+            log.error(f"Comps refresh failed: {e}")
 
 
 async def refresh_properties():
@@ -58,9 +79,11 @@ scheduler = AsyncIOScheduler()
 async def lifespan(app: FastAPI):
     database.init_db()
     await refresh_properties()
+    await refresh_comps()   # initial comps load on startup
     scheduler.add_job(refresh_properties, "interval", hours=REFRESH_HOURS, id="refresh")
+    scheduler.add_job(refresh_comps, "interval", hours=24, id="refresh_comps")
     scheduler.start()
-    log.info(f"Scheduler started — refreshing every {REFRESH_HOURS}h")
+    log.info(f"Scheduler started — properties every {REFRESH_HOURS}h, comps every 24h")
     yield
     scheduler.shutdown()
 
@@ -90,6 +113,7 @@ async def get_status():
     return {
         "property_count": len(props),
         "last_updated": database.get_last_updated(),
+        "comps_last_updated": database.get_comps_last_updated(),
         "data_source": _data_source,
         "refresh_hours": REFRESH_HOURS,
         "demo_mode": _data_source == "demo",
