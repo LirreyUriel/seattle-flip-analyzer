@@ -138,7 +138,7 @@ MOCK_SEEDS = [
      "description": "Back on market — first buyer got cold feet at inspection. Good value SFH in Delridge. Needs cosmetic work — paint, carpet, kitchen refresh. As-is sale. Seller motivated. Large lot."},
 
     {"address": "4823 SW Alaska St", "neighborhood": "Delridge",
-     "price": 398000, "beds": 3, "baths": 1.5, "sqft": 1290, "lot_sqft": 4600,
+     "price": 398000, "beds": 3, "baths": 1.5, "sqft": 1290, "6400": 4600,
      "year_built": 1962, "property_type": "SFH", "distress_type": "Pre-Foreclosure",
      "dom": 47, "price_reductions": 1, "price_reduction_pct": 5.0, "back_on_market": False,
      "description": "Pre-foreclosure listing. Owner behind on payments, motivated to sell quickly. Property needs work but has good potential. Kitchen and baths need update. As-is sale."},
@@ -623,4 +623,259 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
         "price": price,
         "beds": beds,
         "baths": baths,
-        "sq
+        "sqft": sqft,
+        "lot_sqft": lot_sqft,
+        "year_built": year_built,
+        "property_type": prop_type,
+        "distress_type": distress_type,
+        "dom": dom,
+        "price_reductions": price_reductions,
+        "price_reduction_pct": price_drop_pct,
+        "back_on_market": back_on_market,
+        "description": remarks,
+    }
+
+    # --- Safe Build & Validation Catch Block ---
+    try:
+        prop = build_property(seed)
+        prop["source"] = "redfin"
+        prop["redfin_url"] = redfin_url
+        prop["zillow_url"] = _zillow_url_demo(neighborhood)
+        prop["propwire_url"] = propwire_url
+        
+        log.info(f"✅ Property built successfully: '{address}' in region '{neighborhood}' ({prop_type})")
+        return prop
+    except Exception as e:
+        log.warning(f"❌ Failed to build property framework for '{address}' (Region: {neighborhood}). Error trace: {str(e)}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Redfin region IDs — King, Pierce, Snohomish counties
+# ---------------------------------------------------------------------------
+REGIONS = [
+    # King County
+    {"name": "Seattle",          "region_id": "16163"},
+    {"name": "Renton",           "region_id": "16057"},
+    {"name": "Burien",           "region_id": "16742"},
+    {"name": "Kent",             "region_id": "16748"},
+    {"name": "Auburn",           "region_id": "16702"},
+    {"name": "Tukwila",          "region_id": "16170"},
+    {"name": "SeaTac",           "region_id": "16793"},
+    {"name": "Federal Way",      "region_id": "16732"},
+    {"name": "Shoreline",        "region_id": "16165"},
+    {"name": "Kenmore",          "region_id": "16747"},
+    {"name": "Bellevue",         "region_id": "16706"},
+    {"name": "Kirkland",         "region_id": "16749"},
+    {"name": "Redmond",          "region_id": "16786"},
+    {"name": "Bothell",          "region_id": "16712"},
+    {"name": "Des Moines",       "region_id": "16727"},
+    {"name": "Normandy Park",    "region_id": "16773"},
+    {"name": "Covington",        "region_id": "16724"},
+    {"name": "Maple Valley",     "region_id": "16758"},
+    {"name": "Black Diamond",    "region_id": "16709"},
+    {"name": "Enumclaw",         "region_id": "16730"},
+    # Pierce County
+    {"name": "Tacoma",           "region_id": "16817"},
+    {"name": "Lakewood",         "region_id": "16823"},
+    {"name": "Puyallup",         "region_id": "16834"},
+    {"name": "Bonney Lake",      "region_id": "16819"},
+    {"name": "Sumner",           "region_id": "16840"},
+    {"name": "Edgewood",         "region_id": "16821"},
+    {"name": "Milton",           "region_id": "16829"},
+    # Snohomish County
+    {"name": "Everett",          "region_id": "17026"},
+    {"name": "Marysville",       "region_id": "17036"},
+    {"name": "Mukilteo",         "region_id": "17039"},
+    {"name": "Edmonds",          "region_id": "17023"},
+    {"name": "Lynnwood",         "region_id": "17034"},
+    {"name": "Mountlake Terrace","region_id": "17038"},
+    {"name": "Mill Creek",       "region_id": "17037"},
+    {"name": "Snohomish",        "region_id": "17045"},
+]
+
+
+async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int) -> list[dict]:
+    """Fetch SFH listings for a single Redfin region."""
+    region_results = []
+    base = {
+        "al": 1, "num_homes": 150, "page_number": 1,
+        "status": 1, "uipt": "1",
+        "v": 8,
+        "region_id": region["region_id"], "region_type": "6",
+        "max_price": max_price,
+    }
+    queries = [
+        {**base, "ord": "price-asc"},
+        {**base, "ord": "price-asc", "page_number": 2},
+    ]
+    for params in queries:
+        try:
+            resp = await client.get(REDFIN_GIS_URL, params=params, headers=REDFIN_HEADERS)
+            resp.raise_for_status()
+            text = resp.text
+            if text.startswith("{}&&"):
+                text = text[4:]
+            data = json.loads(text)
+            err = data.get("errorMessage", "")
+            if err != "Success":
+                log.warning(f"Redfin [{region['name']}] API error: {err}")
+                break
+            homes = data.get("payload", {}).get("homes", [])
+            log.info(f"Redfin [{region['name']}] p{params['page_number']}: {len(homes)} raw homes")
+            for h in homes:
+                try:
+                    prop = _normalize_redfin(h, max_price=max_price)
+                    if prop:
+                        region_results.append(prop)
+                except Exception as e:
+                    log.debug(f"Skipped home in {region['name']}: {e}")
+        except Exception as e:
+            log.warning(f"Redfin query failed for {region['name']}: {e}")
+            break
+    log.info(f"Redfin [{region['name']}]: {len(region_results)} SFH after filter")
+    return region_results
+
+
+async def fetch_redfin_listings(max_price: int = 1500000) -> list[dict]:
+    """Fetch SFH listings from Redfin across King, Pierce, and Snohomish counties."""
+    all_results = []
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        tasks = [_fetch_region(client, r, max_price) for r in REGIONS]
+        region_batches = await asyncio.gather(*tasks, return_exceptions=True)
+        for batch in region_batches:
+            if isinstance(batch, list):
+                all_results.extend(batch)
+
+    seen: set[str] = set()
+    unique = []
+    for p in all_results:
+        key = p["address"].lower().strip()
+        if key not in seen:
+            seen.add(key)
+            unique.append(p)
+
+    if not unique:
+        raise ValueError("Redfin returned 0 usable properties across all regions")
+
+    unique.sort(key=lambda x: x["flip_score"], reverse=True)
+    log.info(f"Redfin total: {len(unique)} unique SFH across {len(REGIONS)} regions")
+    return unique
+
+
+async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
+    """Fetch recently sold SFH comps from Redfin."""
+    import hashlib as _hashlib
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    COMP_REGIONS = [r for r in REGIONS if r["name"] in (
+        "Seattle", "Renton", "Burien", "Kent", "Auburn", "Tukwila",
+        "Bellevue", "Kirkland", "Redmond", "Bothell", "Shoreline",
+        "Federal Way", "Tacoma", "Everett", "Edmonds", "Lynnwood",
+    )]
+
+    all_comps = []
+
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        for region in COMP_REGIONS:
+            params = {
+                "al": 1, "num_homes": 150, "page_number": 1,
+                "status": 3, "uipt": "1", "v": 8,
+                "region_id": region["region_id"], "region_type": "6",
+                "sold_within_days": 180,
+            }
+            try:
+                resp = await client.get(REDFIN_GIS_URL, params=params, headers=REDFIN_HEADERS)
+                resp.raise_for_status()
+                text = resp.text
+                if text.startswith("{}&&"):
+                    text = text[4:]
+                data = json.loads(text)
+
+                if data.get("errorMessage") != "Success":
+                    log.warning(f"Redfin comps error for {region['name']}: {data.get('errorMessage')}")
+                    continue
+
+                homes = data.get("payload", {}).get("homes", [])
+                log.info(f"Redfin comps [{region['name']}]: {len(homes)} sold homes")
+
+                for h in homes:
+                    try:
+                        price = int(_rf(h.get("price"), 0) or 0)
+                        sqft  = int(_rf(h.get("sqft"), 0) or 0)
+                        if price < 100000 or sqft < 400:
+                            continue
+
+                        remarks = str(_rf(h.get("remarksAccessInfo"), "") or
+                                      _rf(h.get("listingRemarks"), "") or "").lower()
+                        if any(s in remarks for s in ["as-is", "as is", "reo", "bank owned",
+                                                       "short sale", "estate sale", "foreclosure"]):
+                            continue
+
+                        location = str(_rf(h.get("location"), "") or "").strip()
+                        nbhd = location if location else region["name"]
+
+                        psf = round(price / sqft, 2)
+                        address = str(_rf(h.get("streetLine"), "") or "").strip()
+
+                        sold_ts = _rf(h.get("soldDate"), None)
+                        try:
+                            sold_date = _dt.fromtimestamp(
+                                int(sold_ts) / 1000, tz=_tz.utc).strftime("%Y-%m-%d") if sold_ts else _dt.now(_tz.utc).strftime("%Y-%m-%d")
+                        except Exception:
+                            sold_date = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+
+                        comp_id = _hashlib.md5(f"{address}{price}{sqft}".encode()).hexdigest()[:12]
+                        all_comps.append({
+                            "id":            comp_id,
+                            "neighborhood":  nbhd,
+                            "property_type": "SFH",
+                            "sold_price":    price,
+                            "sqft":          sqft,
+                            "psf":           psf,
+                            "sold_date":     sold_date,
+                            "address":       address,
+                        })
+                    except Exception as e:
+                        log.debug(f"Skipped comp: {e}")
+            except Exception as e:
+                log.warning(f"Redfin comps fetch failed for {region['name']}: {e}")
+
+    log.info(f"Redfin comps: {len(all_comps)} usable sold comps across {len(neighborhoods)} neighborhoods")
+    return all_comps
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+async def fetch_all_properties(api_key: str = "", max_price: int = 500000) -> list[dict]:
+    """Priority: Zillow API (if key) → Redfin (real, no key) → demo data."""
+    if api_key:
+        try:
+            zillow = await fetch_zillow_listings(api_key)
+            kc = await fetch_king_county_foreclosures()
+            seen_addresses: set[str] = set()
+            merged = []
+            for p in zillow + kc:
+                if p.get("price", 0) > max_price:
+                    continue
+                key = p.get("address", "").lower().strip()
+                if key not in seen_addresses:
+                    seen_addresses.add(key)
+                    merged.append(p)
+            merged.sort(key=lambda x: x["flip_score"], reverse=True)
+            if merged:
+                return merged[:30]
+        except Exception as e:
+            log.warning(f"Zillow fetch failed: {e}")
+
+    try:
+        props = await fetch_redfin_listings(max_price=max_price)
+        return props[:30]
+    except Exception as e:
+        log.warning(f"Redfin fetch failed: {e} — falling back to demo data")
+
+    properties = [build_property(s) for s in MOCK_SEEDS]
+    properties = [p for p in properties if p.get("price", 0) <= max_price]
+    properties.sort(key=lambda x: x["flip_score"], reverse=True)
+    return properties[:30]
