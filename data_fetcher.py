@@ -301,8 +301,8 @@ def build_property(seed: dict) -> dict:
     _, found_keywords = count_distress_keywords(description)
 
     address = seed["address"]
-    addr_slug = address.lower().replace(" ", "-").replace(",", "").replace(".", "").replace("#", "")
-
+    from urllib.parse import quote_plus as _qp
+    propwire_query = _qp(f"{address}, Seattle, WA")
     prop = {
         "id": _make_id(address),
         "address": address,
@@ -331,7 +331,7 @@ def build_property(seed: dict) -> dict:
         "roi_pct": roi,
         "zillow_url": _zillow_url_demo(neighborhood),
         "redfin_url": _redfin_url_demo(neighborhood),
-        "propwire_url": f"https://propwire.com/listings?address={addr_slug}-seattle-wa",
+        "propwire_url": f"https://propwire.com/search?address={propwire_query}",
         "source": "demo",
         "lat": _address_coords(address, neighborhood)[0],
         "lng": _address_coords(address, neighborhood)[1],
@@ -618,10 +618,10 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     # --- URLs ---
     url_path = h.get("url", "")
     redfin_url = f"https://www.redfin.com{url_path}" if url_path else "https://www.redfin.com/city/16163/WA/Seattle"
-    city = str(h.get("city", "seattle")).lower()
-    addr_slug = address.lower().replace(" ", "-").replace(",", "").replace(".", "").replace("#", "")
-    zillow_url = f"https://www.zillow.com/homes/{addr_slug}-{city}-wa/"
-    propwire_url = f"https://propwire.com/listings?address={addr_slug}-{city}-wa"
+    from urllib.parse import quote_plus
+    city_name = str(h.get("city", "Seattle")).strip()
+    propwire_query = quote_plus(f"{address}, {city_name}, WA")
+    propwire_url = f"https://propwire.com/search?address={propwire_query}"
 
     # SFH only
     if prop_type != "SFH":
@@ -654,27 +654,70 @@ def _normalize_redfin(h: dict, max_price: int = 500000) -> dict | None:
     return prop
 
 
-async def fetch_redfin_listings(max_price: int = 500000) -> list[dict]:
-    """Fetch real Seattle listings from Redfin's internal GIS API.
-    NOTE: Do NOT pass 'market' param — it causes 'Invalid arguments' error.
-    """
-    results: list[dict] = []
+async def fetch_redfin_listings(max_price: int = 1500000) -> list[dict]:
+    """Fetch SFH listings from Redfin across King, Pierce, and Snohomish counties.
+    Each region is fetched concurrently. Results are deduplicated and sorted by flip score.
 
-    # Seattle city region_id=16163, region_type=6
-    # Valid ord values: redfin-recommended-asc, redfin-recommended-desc, price-asc, price-desc
-    base = {
-        "al": 1, "num_homes": 150, "page_number": 1,
-        "status": 1, "uipt": "1,2,3,4,5,6", "v": 8,
-        "region_id": "16163", "region_type": "6",
-        "max_price": max_price,
-    }
-    queries = [
-        {**base, "ord": "price-asc"},
-        {**base, "ord": "redfin-recommended-asc"},
-        {**base, "ord": "price-asc", "page_number": 2},
+    region_type=6 = city, region_type=5 = county, region_type=2 = zip
+    """
+
+    # Verified Redfin region_ids (city, region_type=6) for WA cities
+    REGIONS = [
+        # King County
+        {"name": "Seattle",         "region_id": "16163"},
+        {"name": "Renton",          "region_id": "16057"},
+        {"name": "Burien",          "region_id": "16742"},
+        {"name": "Kent",            "region_id": "16748"},
+        {"name": "Auburn",          "region_id": "16702"},
+        {"name": "Tukwila",         "region_id": "16170"},
+        {"name": "SeaTac",          "region_id": "16793"},
+        {"name": "Federal Way",     "region_id": "16732"},
+        {"name": "Shoreline",       "region_id": "16165"},
+        {"name": "Kenmore",         "region_id": "16747"},
+        {"name": "Bellevue",        "region_id": "16706"},
+        {"name": "Kirkland",        "region_id": "16749"},
+        {"name": "Redmond",         "region_id": "16786"},
+        {"name": "Bothell",         "region_id": "16712"},
+        {"name": "Des Moines",      "region_id": "16727"},
+        {"name": "Normandy Park",   "region_id": "16773"},
+        {"name": "Covington",       "region_id": "16724"},
+        {"name": "Maple Valley",    "region_id": "16758"},
+        {"name": "Black Diamond",   "region_id": "16709"},
+        {"name": "Enumclaw",        "region_id": "16730"},
+        # Pierce County
+        {"name": "Tacoma",          "region_id": "16817"},
+        {"name": "Lakewood",        "region_id": "16823"},
+        {"name": "Puyallup",        "region_id": "16834"},
+        {"name": "Bonney Lake",     "region_id": "16819"},
+        {"name": "Sumner",          "region_id": "16840"},
+        {"name": "Edgewood",        "region_id": "16821"},
+        {"name": "Milton",          "region_id": "16829"},
+        # Snohomish County
+        {"name": "Everett",         "region_id": "17026"},
+        {"name": "Marysville",      "region_id": "17036"},
+        {"name": "Mukilteo",        "region_id": "17039"},
+        {"name": "Edmonds",         "region_id": "17023"},
+        {"name": "Lynnwood",        "region_id": "17034"},
+        {"name": "Mountlake Terrace","region_id": "17038"},
+        {"name": "Mill Creek",      "region_id": "17037"},
+        {"name": "Snohomish",       "region_id": "17045"},
+        {"name": "Bothell",         "region_id": "17019"},  # Snohomish portion
+        {"name": "Kenmore",         "region_id": "17031"},  # Snohomish portion
     ]
 
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    async def _fetch_region(client: httpx.AsyncClient, region: dict) -> list[dict]:
+        region_results = []
+        base = {
+            "al": 1, "num_homes": 150, "page_number": 1,
+            "status": 1, "uipt": "1",   # SFH only
+            "v": 8,
+            "region_id": region["region_id"], "region_type": "6",
+            "max_price": max_price,
+        }
+        queries = [
+            {**base, "ord": "price-asc"},
+            {**base, "ord": "price-asc", "page_number": 2},
+        ]
         for params in queries:
             try:
                 resp = await client.get(REDFIN_GIS_URL, params=params, headers=REDFIN_HEADERS)
@@ -683,38 +726,44 @@ async def fetch_redfin_listings(max_price: int = 500000) -> list[dict]:
                 if text.startswith("{}&&"):
                     text = text[4:]
                 data = json.loads(text)
-
                 if data.get("errorMessage") != "Success":
-                    log.warning(f"Redfin API error: {data.get('errorMessage')}")
-                    continue
-
+                    break
                 homes = data.get("payload", {}).get("homes", [])
-                log.info(f"Redfin: {len(homes)} homes from query ord={params.get('ord')}")
-
                 for h in homes:
                     try:
                         prop = _normalize_redfin(h, max_price=max_price)
                         if prop:
-                            results.append(prop)
+                            region_results.append(prop)
                     except Exception as e:
-                        log.debug(f"Skipped home: {e}")
+                        log.debug(f"Skipped home in {region['name']}: {e}")
             except Exception as e:
-                log.warning(f"Redfin query failed: {e}")
+                log.warning(f"Redfin query failed for {region['name']}: {e}")
+                break
+        log.info(f"Redfin [{region['name']}]: {len(region_results)} SFH fetched")
+        return region_results
+
+    all_results = []
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        tasks = [_fetch_region(client, r) for r in REGIONS]
+        region_batches = await asyncio.gather(*tasks, return_exceptions=True)
+        for batch in region_batches:
+            if isinstance(batch, list):
+                all_results.extend(batch)
 
     # Deduplicate by address
     seen: set[str] = set()
     unique = []
-    for p in results:
+    for p in all_results:
         key = p["address"].lower().strip()
         if key not in seen:
             seen.add(key)
             unique.append(p)
 
     if not unique:
-        raise ValueError("Redfin returned 0 usable properties")
+        raise ValueError("Redfin returned 0 usable properties across all regions")
 
     unique.sort(key=lambda x: x["flip_score"], reverse=True)
-    log.info(f"Redfin: {len(unique)} unique Seattle properties fetched")
+    log.info(f"Redfin total: {len(unique)} unique SFH across {len(REGIONS)} regions")
     return unique
 
 
