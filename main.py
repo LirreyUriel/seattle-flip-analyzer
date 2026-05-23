@@ -57,9 +57,7 @@ scheduler = AsyncIOScheduler()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_db()
-    # Always refresh on startup so URL changes take effect immediately
     await refresh_properties()
-
     scheduler.add_job(refresh_properties, "interval", hours=REFRESH_HOURS, id="refresh")
     scheduler.start()
     log.info(f"Scheduler started — refreshing every {REFRESH_HOURS}h")
@@ -83,7 +81,7 @@ async def index():
 
 
 # ---------------------------------------------------------------------------
-# API routes
+# API routes — status
 # ---------------------------------------------------------------------------
 
 @app.get("/api/status")
@@ -98,6 +96,10 @@ async def get_status():
     }
 
 
+# ---------------------------------------------------------------------------
+# Properties
+# ---------------------------------------------------------------------------
+
 @app.get("/api/properties")
 async def list_properties(
     min_score: int = Query(0, ge=0, le=100),
@@ -107,20 +109,20 @@ async def list_properties(
     min_price: int = Query(0, ge=0),
     max_price: int = Query(500000, ge=0),
     property_type: str = Query(""),
-    sort_by: str = Query("score"),       # score | price | dom | roi
-    sort_dir: str = Query("desc"),        # asc | desc
+    status_filter: str = Query(""),          # new | waiting | ongoing | irrelevant
+    sort_by: str = Query("score"),            # score | price | dom | roi
+    sort_dir: str = Query("desc"),
     favorites_only: bool = Query(False),
 ):
     props = database.get_all_properties()
     favs = database.get_favorites()
-    notes_map = {pid: database.get_note(pid) for pid in favs}
+    statuses = database.get_all_statuses()
 
-    # Enrich with user data
     for p in props:
         p["is_favorite"] = p["id"] in favs
         p["note"] = database.get_note(p["id"])
+        p["status"] = statuses.get(p["id"], "new")
 
-    # Filter
     filtered = []
     for p in props:
         if not (min_score <= p.get("flip_score", 0) <= max_score):
@@ -135,15 +137,11 @@ async def list_properties(
             continue
         if favorites_only and not p.get("is_favorite"):
             continue
+        if status_filter and p.get("status") != status_filter:
+            continue
         filtered.append(p)
 
-    # Sort
-    sort_key_map = {
-        "score": "flip_score",
-        "price": "price",
-        "dom": "dom",
-        "roi": "roi_pct",
-    }
+    sort_key_map = {"score": "flip_score", "price": "price", "dom": "dom", "roi": "roi_pct"}
     key = sort_key_map.get(sort_by, "flip_score")
     reverse = sort_dir.lower() != "asc"
     filtered.sort(key=lambda x: x.get(key, 0), reverse=reverse)
@@ -159,9 +157,8 @@ async def get_property(property_id: str):
     favs = database.get_favorites()
     prop["is_favorite"] = property_id in favs
     prop["note"] = database.get_note(property_id)
+    prop["status"] = database.get_status(property_id)
     return prop
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -200,21 +197,37 @@ async def save_note(property_id: str, payload: NotePayload):
 
 
 # ---------------------------------------------------------------------------
-# Settings
+# Property Status
+# ---------------------------------------------------------------------------
+
+class StatusPayload(BaseModel):
+    status: str  # new | waiting | ongoing | irrelevant
+
+
+@app.post("/api/status/{property_id}")
+async def set_property_status(property_id: str, payload: StatusPayload):
+    prop = database.get_property(property_id)
+    if not prop:
+        raise HTTPException(status_code=404, detail="Property not found")
+    try:
+        status = database.set_status(property_id, payload.status)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"property_id": property_id, "status": status}
+
+
+# ---------------------------------------------------------------------------
+# Settings (weights + max_price)
 # ---------------------------------------------------------------------------
 
 class SettingsPayload(BaseModel):
-    # Profitability (40%)
     w_arv:             float
     w_roi:             float
-    # Execution Efficiency (20%)
     w_profit_reno:     float
     w_reno_level:      float
-    # Liquidity & Asset Risk (25%)
     w_size:            float
     w_structural:      float
     w_market_velocity: float
-    # Market Momentum (15%)
     w_distress:        float
     w_neighborhood:    float
     max_price:         int = 500000
@@ -230,7 +243,6 @@ async def save_settings(payload: SettingsPayload):
     old = database.get_settings()
     data = payload.model_dump()
 
-    # Normalize only the weight fields (not max_price)
     weights = {k: v for k, v in data.items() if k.startswith("w_")}
     total = sum(weights.values()) or 1
     weights = {k: round(v / total * 100, 2) for k, v in weights.items()}
@@ -241,15 +253,14 @@ async def save_settings(payload: SettingsPayload):
     price_changed = old.get("max_price", 500000) != new_settings["max_price"]
 
     if price_changed:
-        # Re-fetch with new price ceiling (background task)
         asyncio.create_task(refresh_properties())
         log.info(f"Max price changed to ${new_settings['max_price']:,} — re-fetching")
         return {"status": "refetching", "settings": new_settings, "rescored": 0}
     else:
-        # Just re-score cached properties
+        cfg = database.get_model_config()
         props = database.get_all_properties()
         for p in props:
-            p["flip_score"] = calculate_flip_score(p, weights)
+            p["flip_score"] = calculate_flip_score(p, weights, cfg)
             p["score_color"] = score_color(p["flip_score"])
         database.update_property_scores(props)
         log.info(f"Re-scored {len(props)} properties with new weights")
@@ -260,12 +271,59 @@ async def save_settings(payload: SettingsPayload):
 async def reset_settings():
     from database import SETTINGS_DEFAULTS
     database.save_settings(dict(SETTINGS_DEFAULTS))
+    cfg = database.get_model_config()
     props = database.get_all_properties()
     for p in props:
-        p["flip_score"] = calculate_flip_score(p)
+        p["flip_score"] = calculate_flip_score(p, None, cfg)
         p["score_color"] = score_color(p["flip_score"])
     database.update_property_scores(props)
     return {"status": "ok", "settings": SETTINGS_DEFAULTS, "rescored": len(props)}
+
+
+# ---------------------------------------------------------------------------
+# Model Config (neighborhoods, reno, keywords) — single GET/POST/reset
+# ---------------------------------------------------------------------------
+
+@app.get("/api/config")
+async def get_config():
+    return database.get_model_config()
+
+
+@app.post("/api/config")
+async def save_config(config: dict):
+    # Basic validation
+    required = {"neighborhoods", "reno_config", "distress_keywords"}
+    missing = required - set(config.keys())
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing keys: {missing}")
+
+    database.save_model_config(config)
+
+    # Re-score all properties with new config
+    settings = database.get_settings()
+    weights = {k: v for k, v in settings.items() if k.startswith("w_")}
+    props = database.get_all_properties()
+    for p in props:
+        p["flip_score"] = calculate_flip_score(p, weights, config)
+        p["score_color"] = score_color(p["flip_score"])
+    database.update_property_scores(props)
+
+    log.info(f"Model config updated — re-scored {len(props)} properties")
+    return {"status": "ok", "rescored": len(props)}
+
+
+@app.post("/api/config/reset")
+async def reset_config():
+    database.reset_model_config()
+    cfg = database.get_model_config()
+    settings = database.get_settings()
+    weights = {k: v for k, v in settings.items() if k.startswith("w_")}
+    props = database.get_all_properties()
+    for p in props:
+        p["flip_score"] = calculate_flip_score(p, weights, cfg)
+        p["score_color"] = score_color(p["flip_score"])
+    database.update_property_scores(props)
+    return {"status": "ok", "config": cfg, "rescored": len(props)}
 
 
 # ---------------------------------------------------------------------------
