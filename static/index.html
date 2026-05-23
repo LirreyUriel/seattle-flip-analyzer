@@ -9,6 +9,100 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    /* ── Status Badge ─────────────────────────────────────────── */
+    .status-badge {
+      display: inline-block; padding: 2px 10px; border-radius: 12px;
+      font-size: 11px; font-weight: 600; letter-spacing: .4px;
+      text-transform: uppercase; cursor: pointer; user-select: none;
+      transition: opacity .15s; white-space: nowrap;
+    }
+    .status-badge:hover { opacity: .75; }
+    .status-new        { background: #1a3a5c; color: #7eb8f7; border: 1px solid #2d5a8e; }
+    .status-waiting    { background: #3d2e00; color: #fbbf24; border: 1px solid #78530a; }
+    .status-ongoing    { background: #0d3320; color: #4ade80; border: 1px solid #166534; }
+    .status-irrelevant { background: #2a2a2a; color: #888; border: 1px solid #444; }
+    .card-footer-row {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-top: .5rem; padding-top: .4rem; border-top: 1px solid var(--border);
+    }
+
+    /* ── Model Config Modal ───────────────────────────────────── */
+    .config-sub-tabs {
+      display: flex; border-bottom: 2px solid var(--border); margin-bottom: 0;
+    }
+    .config-sub-tab {
+      padding: 8px 16px; cursor: pointer; font-size: 13px; background: none;
+      border: none; border-bottom: 2px solid transparent; margin-bottom: -2px;
+      color: var(--text-muted);
+    }
+    .config-sub-tab:hover { color: var(--text); }
+    .config-sub-tab.active { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; }
+    .config-desc { font-size: 12px; color: var(--text-muted); margin-bottom: 14px; line-height: 1.5; }
+    .config-sub-heading {
+      font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+      color: var(--text-muted); margin: 20px 0 8px; border-bottom: 1px solid var(--border); padding-bottom: 5px;
+    }
+    .config-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 8px; }
+    .config-table th {
+      text-align: left; padding: 6px 10px; background: var(--surface2);
+      color: var(--text-muted); font-weight: 600; border-bottom: 2px solid var(--border);
+    }
+    .config-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+    .config-table tr:hover td { background: rgba(255,255,255,.03); }
+    .config-table input[type=number],
+    .config-table input[type=text] {
+      width: 90px; padding: 3px 6px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-size: 12px;
+    }
+    .config-table input[type=text] { width: 150px; }
+    .config-table select {
+      padding: 3px 6px; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; color: var(--text); font-size: 12px;
+    }
+    .btn-remove {
+      background: none; border: none; color: var(--red); cursor: pointer;
+      font-size: 18px; line-height: 1; padding: 0 4px;
+    }
+    .btn-remove:hover { opacity: .7; }
+    .btn-add-row {
+      margin-top: 8px; font-size: 12px; padding: 4px 12px;
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 4px; cursor: pointer; color: var(--accent);
+    }
+    .btn-add-row:hover { opacity: .8; }
+    .reno-block {
+      background: var(--surface2); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px;
+    }
+    .reno-block h5 {
+      font-size: 11px; font-weight: 700; text-transform: uppercase;
+      color: var(--text-muted); margin: 0 0 10px;
+    }
+    .reno-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+    .reno-field label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 3px; }
+    .reno-field input {
+      width: 100%; padding: 4px 8px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 13px;
+    }
+    .keywords-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .keyword-chip {
+      display: flex; align-items: center; gap: 4px;
+      background: var(--surface2); color: var(--accent);
+      border: 1px solid var(--border); border-radius: 14px;
+      padding: 3px 10px 3px 12px; font-size: 12px;
+    }
+    .keyword-chip button {
+      background: none; border: none; color: var(--text-muted);
+      cursor: pointer; font-size: 15px; line-height: 1; padding: 0;
+    }
+    .keyword-chip button:hover { color: var(--red); }
+    .keyword-add-row { display: flex; gap: 8px; margin-top: 4px; }
+    .keyword-add-row input {
+      flex: 1; padding: 5px 10px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 4px; color: var(--text); font-size: 13px;
+    }
+  </style>
 </head>
 <body>
 
@@ -25,6 +119,7 @@
     </div>
     <button class="btn" id="map-toggle-btn" title="Toggle map">🗺 Map</button>
     <button class="btn" id="settings-btn" title="Score Settings">⚙ Settings</button>
+    <button class="btn" id="config-btn" title="Model Config">🔧 Model Config</button>
     <button class="btn btn-primary" id="refresh-btn">↻ Refresh</button>
   </div>
 </header>
@@ -193,6 +288,7 @@
             <th data-col="roi_pct" class="tr">ROI % <span class="col-est">(est.)</span></th>
             <th data-col="dom" class="tr">DOM</th>
             <th data-col="price_psf" class="tr">$/sqft</th>
+            <th data-col="status" class="tc">Status</th>
           </tr>
         </thead>
         <tbody id="comp-tbody"></tbody>
@@ -275,6 +371,91 @@
         <button class="btn" id="settings-reset-btn">Reset to Defaults</button>
         <button class="btn btn-primary" id="settings-save-btn">Save &amp; Re-score</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     Model Config Modal
+     ================================================================ -->
+<div class="modal-backdrop hidden" id="config-backdrop" role="dialog" aria-modal="true" aria-label="Model Config">
+  <div class="modal" style="max-width:760px;max-height:90vh;display:flex;flex-direction:column">
+    <div class="modal-header" style="padding:1.25rem 1.5rem 1rem;flex-shrink:0">
+      <div>
+        <div style="font-size:1.1rem;font-weight:700">🔧 Model Config</div>
+        <div style="font-size:.8rem;color:var(--text-muted);margin-top:.2rem">
+          Edit every parameter of the scoring model — no hardcoded values.
+        </div>
+      </div>
+      <button class="modal-close" id="config-close-btn">✕</button>
+    </div>
+
+    <!-- Sub-tab nav -->
+    <div class="config-sub-tabs" style="padding:0 1.5rem;flex-shrink:0">
+      <button class="config-sub-tab active" data-ctab="neighborhoods">Neighborhoods</button>
+      <button class="config-sub-tab" data-ctab="renovation">Renovation</button>
+      <button class="config-sub-tab" data-ctab="thresholds">Score Thresholds</button>
+      <button class="config-sub-tab" data-ctab="keywords">Distress Keywords</button>
+    </div>
+
+    <!-- Scrollable body -->
+    <div style="flex:1;overflow-y:auto;padding:1.25rem 1.5rem">
+
+      <!-- Neighborhoods -->
+      <div id="ctab-neighborhoods" class="ctab-panel">
+        <p class="config-desc">ARV per sqft and average DOM per neighborhood. Tier controls Neighborhood Upside score: top=100, mid=65, other=35.</p>
+        <table class="config-table" id="nbhd-table">
+          <thead><tr><th>Neighborhood</th><th>ARV $/sqft</th><th>Avg DOM</th><th>Tier</th><th></th></tr></thead>
+          <tbody id="nbhd-tbody"></tbody>
+        </table>
+        <button class="btn-add-row" onclick="addNeighborhoodRow()">+ Add Neighborhood</button>
+      </div>
+
+      <!-- Renovation -->
+      <div id="ctab-renovation" class="ctab-panel" style="display:none">
+        <p class="config-desc">Cost per sqft and score per renovation level. Age multipliers are applied to base cost.</p>
+        <div id="reno-levels-container"></div>
+        <h4 class="config-sub-heading">Age Multipliers</h4>
+        <p class="config-desc" style="margin-top:-8px">Applied when property age ≥ Min Age (years). Sorted descending — first match wins.</p>
+        <table class="config-table" id="age-mult-table">
+          <thead><tr><th>Min Age (years)</th><th>Multiplier</th><th></th></tr></thead>
+          <tbody id="age-mult-tbody"></tbody>
+        </table>
+        <button class="btn-add-row" onclick="addAgeMult()">+ Add Tier</button>
+        <h4 class="config-sub-heading">Property Type Discounts (multipliers on ARV $/sqft)</h4>
+        <table class="config-table" id="pt-discounts-table">
+          <thead><tr><th>Property Type</th><th>Multiplier (e.g. 0.85)</th><th></th></tr></thead>
+          <tbody id="pt-discounts-tbody"></tbody>
+        </table>
+        <button class="btn-add-row" onclick="addPropertyTypeDiscount()">+ Add Type</button>
+      </div>
+
+      <!-- Score Thresholds -->
+      <div id="ctab-thresholds" class="ctab-panel" style="display:none">
+        <p class="config-desc">Numerical thresholds used in each scoring factor.</p>
+        <table class="config-table" id="thresholds-table">
+          <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+          <tbody id="thresholds-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- Keywords -->
+      <div id="ctab-keywords" class="ctab-panel" style="display:none">
+        <p class="config-desc">Words/phrases that signal a distressed property. Each match adds points to the Distress score.</p>
+        <div class="keywords-grid" id="keywords-container"></div>
+        <div class="keyword-add-row">
+          <input type="text" id="new-keyword-input" placeholder="Add keyword or phrase…"
+                 onkeydown="if(event.key==='Enter')addKeyword()">
+          <button class="btn btn-primary" onclick="addKeyword()">Add</button>
+        </div>
+      </div>
+
+    </div><!-- /scrollable body -->
+
+    <!-- Footer actions -->
+    <div style="padding:1rem 1.5rem;border-top:1px solid var(--border);display:flex;gap:.75rem;justify-content:flex-end;flex-shrink:0;background:var(--surface)">
+      <button class="btn" id="config-reset-btn">Reset to Defaults</button>
+      <button class="btn btn-primary" id="config-save-btn">Save &amp; Re-score</button>
     </div>
   </div>
 </div>
