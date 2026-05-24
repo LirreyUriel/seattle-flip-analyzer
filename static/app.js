@@ -15,6 +15,9 @@ let activeFilters = {
   min_price: 0, max_price: 1500000,
   property_type: '',
   status_filter: '',
+  reno_level: '',
+  min_dom: '', max_dom: '',
+  min_year: '', max_year: '',
   sort_by: 'score',
   sort_dir: 'desc',
   favorites_only: false,
@@ -75,17 +78,44 @@ function esc(str) {
 // ---------------------------------------------------------------------------
 // Map
 // ---------------------------------------------------------------------------
+let tileLayer = null;
+
+// Carto Voyager (light) has colored streets, water, parks, and labels — looks
+// like a real street map. Carto dark_all is the same data styled dark.
+const TILE_URLS = {
+  light: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+  dark:  'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+};
+const TILE_ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
+
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
+
+function applyMapTheme() {
+  if (!map) return;
+  if (tileLayer) tileLayer.remove();
+  tileLayer = L.tileLayer(TILE_URLS[currentTheme()], {
+    attribution: TILE_ATTRIBUTION,
+    maxZoom: 19,
+    subdomains: 'abcd',
+    detectRetina: true,
+  }).addTo(map);
+}
+
 function initMap() {
   if (map) return;
   map = L.map('property-map', {
     center: [47.615, -122.320],
     zoom: 12,
     zoomControl: true,
+    preferCanvas: true,
   });
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/">CARTO</a>',
-    maxZoom: 19,
-  }).addTo(map);
+  applyMapTheme();
+  // Container may not have its final size yet on first paint — re-measure
+  // so tiles load instead of getting stuck in a 0x0 viewport.
+  setTimeout(() => map && map.invalidateSize(), 100);
 }
 
 function updateMapMarkers(props) {
@@ -177,11 +207,18 @@ async function loadProperties() {
     max_price: activeFilters.max_price,
     property_type: activeFilters.property_type,
     status_filter: activeFilters.status_filter,
+    reno_level: activeFilters.reno_level,
     sort_by: activeFilters.sort_by,
     sort_dir: activeFilters.sort_dir,
     favorites_only: activeFilters.favorites_only,
     comps_only: activeFilters.comps_only,
   });
+  // Only send numeric ranges when actually set — keeps the URL clean and
+  // lets the backend use its own defaults.
+  if (activeFilters.min_dom  !== '') params.set('min_dom',  activeFilters.min_dom);
+  if (activeFilters.max_dom  !== '') params.set('max_dom',  activeFilters.max_dom);
+  if (activeFilters.min_year !== '') params.set('min_year', activeFilters.min_year);
+  if (activeFilters.max_year !== '') params.set('max_year', activeFilters.max_year);
 
   try {
     const data = await apiFetch('/api/properties?' + params);
@@ -868,12 +905,39 @@ function bindFilters() {
     loadProperties();
   });
 
-  // 👇 הנה החלק החדש של סעיף ג' (נכנס כאן) 👇
   // Comps only toggle
   get('filter-comps-only').addEventListener('change', e => {
     activeFilters.comps_only = e.target.checked;
     loadProperties();
   });
+
+  // Reno level
+  get('filter-reno').addEventListener('change', e => {
+    activeFilters.reno_level = e.target.value;
+    loadProperties();
+  });
+
+  // DOM range — debounce a touch so typing doesn't fire a request per keystroke
+  const domMin = get('dom-min');
+  const domMax = get('dom-max');
+  const applyDom = () => {
+    activeFilters.min_dom = domMin.value === '' ? '' : (parseInt(domMin.value) || 0);
+    activeFilters.max_dom = domMax.value === '' ? '' : (parseInt(domMax.value) || 0);
+    loadProperties();
+  };
+  domMin.addEventListener('change', applyDom);
+  domMax.addEventListener('change', applyDom);
+
+  // Year-built range
+  const yearMin = get('year-min');
+  const yearMax = get('year-max');
+  const applyYear = () => {
+    activeFilters.min_year = yearMin.value === '' ? '' : (parseInt(yearMin.value) || 0);
+    activeFilters.max_year = yearMax.value === '' ? '' : (parseInt(yearMax.value) || 0);
+    loadProperties();
+  };
+  yearMin.addEventListener('change', applyYear);
+  yearMax.addEventListener('change', applyYear);
 
   // Reset
   get('reset-filters').addEventListener('click', () => {
@@ -881,9 +945,13 @@ function bindFilters() {
       min_score: 0, max_score: 100,
       neighborhood: '', distress_type: '', property_type: '',
       min_price: 0, max_price: 1500000,
-      sort_by: 'score', sort_dir: 'desc', 
+      status_filter: '',
+      reno_level: '',
+      min_dom: '', max_dom: '',
+      min_year: '', max_year: '',
+      sort_by: 'score', sort_dir: 'desc',
       favorites_only: false,
-      comps_only: false, // ✓ קיים אצלך
+      comps_only: false,
     };
     get('filter-score').value = 0;
     get('score-val').textContent = 0;
@@ -892,14 +960,16 @@ function bindFilters() {
     get('filter-type').value = '';
     get('price-min').value = 0;
     get('price-max').value = 1500000;
-    get('sort-by').value = 'score';
+    get('filter-reno').value = '';
+    get('dom-min').value = '';
+    get('dom-max').value = '';
+    get('year-min').value = '';
+    get('year-max').value = '';
     get('sort-by').value = 'score';
     get('sort-dir').value = 'desc';
     get('filter-favs').checked = false;
-    
-    // 👇 השורה שחסרה לך כדי להשלים את סעיף ד' ויזואלית 👇
-    get('filter-comps-only').checked = false; 
-    
+    get('filter-comps-only').checked = false;
+
     loadProperties();
   });
 }
@@ -1393,6 +1463,7 @@ function toggleTheme() {
   const next = current === 'dark' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
   localStorage.setItem('theme', next);
+  applyMapTheme();
   const btn = document.getElementById('theme-toggle-btn');
   if (btn) btn.textContent = next === 'dark' ? '☀ Light' : '🌙 Dark';
 }

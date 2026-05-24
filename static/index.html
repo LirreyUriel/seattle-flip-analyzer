@@ -250,12 +250,43 @@
   </div>
 
   <div class="filter-group">
+    <label>Reno Level</label>
+    <select id="filter-reno">
+      <option value="">Any</option>
+      <option value="light">Light</option>
+      <option value="medium">Medium</option>
+      <option value="heavy">Heavy</option>
+    </select>
+  </div>
+
+  <div class="filter-group">
+    <label>Days on Market</label>
+    <div class="filter-price-row">
+      <input type="number" id="dom-min" min="0" max="999" step="1" placeholder="Min" />
+      <span>–</span>
+      <input type="number" id="dom-max" min="0" max="999" step="1" placeholder="Max" />
+    </div>
+  </div>
+
+  <div class="filter-group">
+    <label>Year Built</label>
+    <div class="filter-price-row">
+      <input type="number" id="year-min" min="1850" max="2030" step="1" placeholder="Min" />
+      <span>–</span>
+      <input type="number" id="year-max" min="1850" max="2030" step="1" placeholder="Max" />
+    </div>
+  </div>
+
+  <div class="filter-group">
     <label>Sort By</label>
     <select id="sort-by">
       <option value="score">Flip Score</option>
       <option value="price">Price</option>
       <option value="dom">Days on Market</option>
       <option value="roi">ROI %</option>
+      <option value="arv">ARV</option>
+      <option value="profit">Profit ($)</option>
+      <option value="rate">$/Sqft Rate</option>
     </select>
   </div>
 

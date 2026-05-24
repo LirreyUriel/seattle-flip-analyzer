@@ -119,8 +119,13 @@ async def list_properties(
     min_price: int = Query(0, ge=0),
     max_price: int = Query(1500000, ge=0),
     property_type: str = Query(""),
-    status_filter: str = Query(""),          
-    sort_by: str = Query("score"),            
+    status_filter: str = Query(""),
+    reno_level: str = Query(""),
+    min_dom: Optional[int] = Query(None, ge=0),
+    max_dom: Optional[int] = Query(None, ge=0),
+    min_year: Optional[int] = Query(None, ge=1800),
+    max_year: Optional[int] = Query(None, le=2100),
+    sort_by: str = Query("score"),
     sort_dir: str = Query("desc"),
     favorites_only: bool = Query(False),
     comps_only: bool = Query(False),
@@ -151,9 +156,17 @@ async def list_properties(
             continue
         if status_filter and p.get("status") != status_filter:
             continue
+        if reno_level and (p.get("renovation_level") or "").lower() != reno_level.lower():
+            continue
+        if min_dom is not None and p.get("dom", 0) < min_dom:
+            continue
+        if max_dom is not None and p.get("dom", 0) > max_dom:
+            continue
+        if min_year is not None and p.get("year_built", 0) < min_year:
+            continue
+        if max_year is not None and p.get("year_built", 0) > max_year:
+            continue
 
-        # 📊 סינון "Only with Comps" — חל רק כאשר הצ'קבוקס דלוק.
-        # מבלי כך הנכסים שאין להם קומפס נשארים בתוצאות (עם ARV סטטי).
         if comps_only:
             arv_bd = p.get("arv_breakdown") or {}
             method = (arv_bd.get("arv_method") or "").lower()
@@ -161,17 +174,32 @@ async def list_properties(
                 continue
 
         filtered.append(p)
-        
 
-    sort_key_map = {"score": "flip_score", "price": "price", "dom": "dom", "roi": "roi_pct"}
-    key = sort_key_map.get(sort_by, "flip_score")
+    # Sort — simple fields go via key lookup; computed fields (profit, $/sqft
+    # rate) use a lambda so we don't have to persist them on every property.
+    def _profit(p):
+        return p.get("arv", 0) - p.get("price", 0) - p.get("renovation_cost", 0)
+
+    def _rate(p):
+        sqft = p.get("sqft", 0)
+        return (p.get("price", 0) / sqft) if sqft else 0
+
+    sort_key_fns = {
+        "score":  lambda p: p.get("flip_score", 0),
+        "price":  lambda p: p.get("price", 0),
+        "dom":    lambda p: p.get("dom", 0),
+        "roi":    lambda p: p.get("roi_pct", 0),
+        "arv":    lambda p: p.get("arv", 0),
+        "profit": _profit,
+        "rate":   _rate,
+    }
+    key_fn = sort_key_fns.get(sort_by, sort_key_fns["score"])
     reverse = sort_dir.lower() != "asc"
-    filtered.sort(key=lambda x: x.get(key, 0), reverse=reverse)
-    
-    # ✓ חיתוך דינמי מוגן ל-30 המובילים רק בסוף
+    filtered.sort(key=key_fn, reverse=reverse)
+
     limit = globals().get("MAX_PROPERTIES", 30)
     final_properties = filtered[:limit]
-    
+
     return {"properties": final_properties, "total": len(final_properties)}
 
 
