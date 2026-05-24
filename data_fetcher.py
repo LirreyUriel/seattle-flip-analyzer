@@ -629,6 +629,18 @@ def _normalize_redfin(h: dict, max_price: int = 500000, comps: list[dict] = None
         log.info(f"❌ Filtered out '{address}': Price (${price}) exceeds max_price limit (${max_price})")
         return None
 
+    # 🛡️ Defensive state/city filter — Redfin region IDs occasionally collide
+    # across states (e.g. a Seattle region_id can leak a Wisconsin result whose
+    # streetLine reads like "W 5300 CTH A"). Drop anything not in WA / Seattle metro.
+    state = str(_rf(h.get("state"), "") or h.get("stateCode", "") or "").strip().upper()
+    city  = str(_rf(h.get("city"), "") or "").strip().lower()
+    if state and state not in ("WA", "WASHINGTON"):
+        log.info(f"❌ Filtered out '{address}': non-WA state ({state}, city={city or 'n/a'})")
+        return None
+    if city and city not in SEATTLE_METRO_CITIES:
+        log.info(f"❌ Filtered out '{address}': city '{city}' not in Seattle metro")
+        return None
+
     neighborhood = str(_rf(h.get("location"), "") or "").strip() or "Seattle"
     ui_type = int(h.get("uiPropertyType", 1) or 1)
     prop_type = _UI_PROP_TYPES.get(ui_type, "SFH")
@@ -716,48 +728,41 @@ def _normalize_redfin(h: dict, max_price: int = 500000, comps: list[dict] = None
 
 
 # ---------------------------------------------------------------------------
-# Redfin region IDs — King, Pierce, Snohomish counties
+# Redfin region IDs — Seattle + close-in suburbs only.
+# Pierce County (Tacoma metro) and outer Snohomish (Everett metro) deliberately
+# excluded — those are separate metro areas, not Seattle suburbs.
 # ---------------------------------------------------------------------------
 REGIONS = [
-    # King County
+    # Seattle proper
     {"name": "Seattle",          "region_id": "16163"},
-    {"name": "Renton",           "region_id": "16057"},
+    # King County — immediate Seattle suburbs
+    {"name": "Shoreline",        "region_id": "16165"},
     {"name": "Burien",           "region_id": "16742"},
-    {"name": "Kent",             "region_id": "16748"},
-    {"name": "Auburn",           "region_id": "16702"},
     {"name": "Tukwila",          "region_id": "16170"},
     {"name": "SeaTac",           "region_id": "16793"},
-    {"name": "Federal Way",      "region_id": "16732"},
-    {"name": "Shoreline",        "region_id": "16165"},
     {"name": "Kenmore",          "region_id": "16747"},
+    {"name": "Renton",           "region_id": "16057"},
     {"name": "Bellevue",         "region_id": "16706"},
     {"name": "Kirkland",         "region_id": "16749"},
     {"name": "Redmond",          "region_id": "16786"},
     {"name": "Bothell",          "region_id": "16712"},
     {"name": "Des Moines",       "region_id": "16727"},
     {"name": "Normandy Park",    "region_id": "16773"},
-    {"name": "Covington",        "region_id": "16724"},
-    {"name": "Maple Valley",     "region_id": "16758"},
-    {"name": "Black Diamond",    "region_id": "16709"},
-    {"name": "Enumclaw",         "region_id": "16730"},
-    # Pierce County
-    {"name": "Tacoma",           "region_id": "16817"},
-    {"name": "Lakewood",         "region_id": "16823"},
-    {"name": "Puyallup",         "region_id": "16834"},
-    {"name": "Bonney Lake",      "region_id": "16819"},
-    {"name": "Sumner",           "region_id": "16840"},
-    {"name": "Edgewood",         "region_id": "16821"},
-    {"name": "Milton",           "region_id": "16829"},
-    # Snohomish County
-    {"name": "Everett",          "region_id": "17026"},
-    {"name": "Marysville",       "region_id": "17036"},
-    {"name": "Mukilteo",         "region_id": "17039"},
+    # Snohomish County — only the cities that border Seattle / are part of the Seattle commute
     {"name": "Edmonds",          "region_id": "17023"},
-    {"name": "Lynnwood",         "region_id": "17034"},
     {"name": "Mountlake Terrace","region_id": "17038"},
-    {"name": "Mill Creek",       "region_id": "17037"},
-    {"name": "Snohomish",        "region_id": "17045"},
+    {"name": "Lynnwood",         "region_id": "17034"},
 ]
+
+# Set of city names that count as "Seattle metro" for defensive city-field filtering.
+# Used in _normalize_redfin to drop any home Redfin returns whose city field
+# doesn't match — guards against cross-region/cross-state leaks.
+SEATTLE_METRO_CITIES = {r["name"].lower() for r in REGIONS} | {
+    # Tiny adjacent cities Redfin sometimes labels homes with — accept these too.
+    "lake forest park", "mercer island", "newcastle", "clyde hill",
+    "medina", "yarrow point", "hunts point", "beaux arts village",
+    "woodinville", "kenmore", "lake forest", "white center",
+}
 
 
 async def _fetch_region(client: httpx.AsyncClient, region: dict, max_price: int, comps: list[dict] = None) -> list[dict]:
@@ -835,11 +840,9 @@ async def fetch_redfin_comps(neighborhoods: list[str]) -> list[dict]:
     import hashlib as _hashlib
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
 
-    COMP_REGIONS = [r for r in REGIONS if r["name"] in (
-        "Seattle", "Renton", "Burien", "Kent", "Auburn", "Tukwila",
-        "Bellevue", "Kirkland", "Redmond", "Bothell", "Shoreline",
-        "Federal Way", "Tacoma", "Everett", "Edmonds", "Lynnwood",
-    )]
+    # Use the full Seattle-metro REGIONS for comps — wider coverage gives better
+    # ARV signal, but stays inside Seattle suburbs (no Tacoma/Everett metro).
+    COMP_REGIONS = list(REGIONS)
 
     all_comps = []
 
